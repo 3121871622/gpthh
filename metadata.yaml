@@ -1,0 +1,19 @@
+name: astrbot_plugin_gpt_image
+display_name: gpt-image-2.5绘画
+desc: gpt-image-2.5 绘画插件，支持 OpenAI 兼容、Gemini、Grok、Flux、SD WebUI、ComfyUI、即梦、通义万相协议，提供文生图、图片编辑、多图编辑、批量出图、提示词库与抽卡排行，适配 QQ 官方机器人和 OneBot v11。
+short_desc: gpt-image-2.5 绘画 / 图片编辑 / 多图编辑，支持 8 种协议、批量出图、抽卡排行与多机器人独立配置。
+version: 1.0.8
+author: Codex
+repo: https://github.com/AstrBotDevs/AstrBot
+astrbot_version: ">=4.19"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+pages:
+  - settings
+tags:
+  - 绘画
+  - AI
+  - gpt-image
+  - 图片编辑
