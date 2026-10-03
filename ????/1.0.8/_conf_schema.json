@@ -1,0 +1,768 @@
+{
+  "suppliers": {
+    "description": "供应商（接口服务）",
+    "hint": "一个供应商保存名称、Base URL 和 API Key。按目标服务支持的接口选择协议；切换协议沿用该供应商的地址和密钥。",
+    "type": "template_list",
+    "default": [],
+    "templates": {
+      "supplier": {
+        "name": "供应商（接口服务）",
+        "hint": "一个供应商保存名称、Base URL 和 API Key。按目标服务支持的接口选择协议；切换协议沿用该供应商的地址和密钥。",
+        "items": {
+          "name": {
+            "description": "供应商名称",
+            "type": "string",
+            "default": "默认中转站"
+          },
+          "base_url": {
+            "description": "接口地址 Base URL",
+            "hint": "填写服务根地址或所需前缀。OpenAI/Grok/Flux 按需补 /v1，Gemini 补 /v1beta；SD WebUI/ComfyUI 不补版本，即梦/通义万相使用各自请求路径。",
+            "type": "string",
+            "default": "https://api.openai.com/v1"
+          },
+          "api_key": {
+            "description": "API Key",
+            "type": "string",
+            "default": "",
+            "secret": true
+          }
+        }
+      }
+    }
+  },
+  "active_supplier": {
+    "description": "当前使用的供应商",
+    "hint": "填写供应商名称或序号；也可在聊天里用主人指令“切换供应商”临时切换。",
+    "type": "string",
+    "default": "默认中转站"
+  },
+  "active_protocol": {
+    "description": "当前接口协议",
+    "hint": "openai / gemini / grok / flux / sdwebui / comfyui / jimeng / tongyi，可用主人指令「切换协议」修改。",
+    "type": "string",
+    "default": "openai",
+    "options": [
+      "openai",
+      "gemini",
+      "grok",
+      "flux",
+      "sdwebui",
+      "comfyui",
+      "jimeng",
+      "tongyi"
+    ]
+  },
+  "protocol_models": {
+    "description": "各协议使用的模型",
+    "hint": "按八种协议保存 {model, edit_model}，默认值来自 core/models.py；编辑模型留空时沿用生成模型，实际名称需与目标服务一致。",
+    "type": "dict",
+    "default": {
+      "openai": {
+        "model": "gpt-image-2",
+        "edit_model": ""
+      },
+      "gemini": {
+        "model": "gemini-2.5-flash-image",
+        "edit_model": ""
+      },
+      "grok": {
+        "model": "grok-2-image",
+        "edit_model": ""
+      },
+      "flux": {
+        "model": "flux-1.1-pro",
+        "edit_model": ""
+      },
+      "sdwebui": {
+        "model": "",
+        "edit_model": ""
+      },
+      "comfyui": {
+        "model": "",
+        "edit_model": ""
+      },
+      "jimeng": {
+        "model": "jimeng-3.0",
+        "edit_model": ""
+      },
+      "tongyi": {
+        "model": "wanx2.1-t2i-turbo",
+        "edit_model": ""
+      }
+    }
+  },
+  "model_cache": {
+    "description": "模型列表缓存（插件自动维护，请勿手动修改）",
+    "hint": "由插件在拉取模型列表后自动写入，用于避免重复联网请求；配置页保存 / 插件重载后依然保留。",
+    "type": "dict",
+    "default": {},
+    "invisible": true
+  },
+  "trigger_mode": {
+    "description": "触发方式",
+    "hint": "at=群聊需要 @机器人或唤醒前缀；command=消息以指令开头即可触发。QQ 官方机器人群聊在 at 模式下也允许免 @；仍受群权限及平台投递限制。",
+    "type": "string",
+    "default": "at",
+    "options": [
+      "at",
+      "command"
+    ]
+  },
+  "cooldown": {
+    "description": "同一会话触发冷却（秒）",
+    "hint": "0 表示不限制。按 AstrBot 会话计算冷却，群聊会话可能由群成员共享；冷却期间重复绘画/编辑会提示剩余时间。",
+    "type": "int",
+    "default": 0
+  },
+  "retry_times": {
+    "description": "失败自动重试次数",
+    "hint": "针对超时 / 网络错误 / 5xx 自动重试，0 表示不重试。",
+    "type": "int",
+    "default": 1
+  },
+  "proxy": {
+    "description": "HTTP 代理（可选）",
+    "hint": "形如 http://127.0.0.1:7890，留空表示不使用代理。",
+    "type": "string",
+    "default": ""
+  },
+  "supplier_commands": {
+    "description": "供应商 / 协议 / 统计类指令名",
+    "hint": "按顺序对应：供应商列表、切换供应商、协议列表、切换协议、模型列表、切换模型、运行统计、重置设置。可改名，不建议增删（保持 8 个）。",
+    "type": "list",
+    "default": [
+      "供应商列表",
+      "切换供应商",
+      "协议列表",
+      "切换协议",
+      "模型列表",
+      "切换模型",
+      "运行统计",
+      "重置设置"
+    ]
+  },
+  "providers": {
+    "description": "旧版兼容通道（迁移读取）",
+    "hint": "仅用于读取旧配置，不代表当前协议列表。v1.0.2 起请使用「供应商」与「各协议模型」；首次读取旧配置时会迁移为供应商，此键仅保留兼容用途。",
+    "type": "template_list",
+    "default": [],
+    "templates": {
+      "openai": {
+        "name": "OpenAI 兼容（推荐）",
+        "hint": "适用于任何 OpenAI 兼容中转站：/images/generations 生成、/images/edits 编辑（支持多图）。",
+        "items": {
+          "name": {
+            "description": "通道名称",
+            "type": "string",
+            "default": "OpenAI 兼容"
+          },
+          "base_url": {
+            "description": "接口地址 Base URL",
+            "hint": "例：https://api.example.com/v1（脚本会自动补 /v1）",
+            "type": "string",
+            "default": "https://api.openai.com/v1"
+          },
+          "api_key": {
+            "description": "API Key",
+            "type": "string",
+            "default": "",
+            "secret": true
+          },
+          "model": {
+            "description": "生成模型",
+            "hint": "文生图使用的模型名，可在插件设置页点击“获取模型列表”选择",
+            "type": "string",
+            "default": "gpt-image-2"
+          },
+          "edit_model": {
+            "description": "编辑模型",
+            "hint": "留空则与生成模型相同",
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "gemini": {
+        "name": "Gemini 兼容",
+        "hint": "Google Gemini / 兼容中转站：generateContent + inlineData，支持多图输入。",
+        "items": {
+          "name": {
+            "description": "通道名称",
+            "type": "string",
+            "default": "Gemini 兼容"
+          },
+          "base_url": {
+            "description": "接口地址 Base URL",
+            "hint": "例：https://generativelanguage.googleapis.com",
+            "type": "string",
+            "default": "https://generativelanguage.googleapis.com"
+          },
+          "api_key": {
+            "description": "API Key",
+            "type": "string",
+            "default": "",
+            "secret": true
+          },
+          "model": {
+            "description": "生成模型",
+            "type": "string",
+            "default": "gemini-2.5-flash-image"
+          },
+          "edit_model": {
+            "description": "编辑模型",
+            "hint": "留空则与生成模型相同",
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "grok": {
+        "name": "Grok 兼容",
+        "hint": "xAI Grok / 兼容中转站：优先 /images/generations 与 /images/edits，失败时自动回退 chat/completions。",
+        "items": {
+          "name": {
+            "description": "通道名称",
+            "type": "string",
+            "default": "Grok 兼容"
+          },
+          "base_url": {
+            "description": "接口地址 Base URL",
+            "type": "string",
+            "default": "https://api.x.ai/v1"
+          },
+          "api_key": {
+            "description": "API Key",
+            "type": "string",
+            "default": "",
+            "secret": true
+          },
+          "model": {
+            "description": "生成模型",
+            "type": "string",
+            "default": "grok-2-image"
+          },
+          "edit_model": {
+            "description": "编辑模型",
+            "hint": "留空则与生成模型相同",
+            "type": "string",
+            "default": ""
+          }
+        }
+      }
+    },
+    "invisible": true
+  },
+  "active_provider": {
+    "description": "当前使用的通道（旧版兼容）",
+    "hint": "旧版键，已由「当前使用的供应商」取代；仅用于兼容旧配置，首次读取时会自动迁移。",
+    "type": "string",
+    "default": "OpenAI 兼容",
+    "invisible": true
+  },
+  "active_size": {
+    "description": "当前图片尺寸",
+    "hint": "默认尺寸，群内可用主人指令“切换尺寸”临时修改。",
+    "type": "string",
+    "default": "1024x1024"
+  },
+  "image_sizes": {
+    "description": "可选图片尺寸列表",
+    "hint": "每行一个，例：1024x1024 / 1536x1024 / 1024x1536 / auto。也支持 1:1、3:2、2:3 等写法。",
+    "type": "list",
+    "default": [
+      "1024x1024",
+      "1536x1024",
+      "1024x1536",
+      "auto"
+    ]
+  },
+  "sizes": {
+    "description": "尺寸列表（与「可选图片尺寸列表」同步，插件自动维护）",
+    "hint": "插件内部使用的尺寸键，与「可选图片尺寸列表」自动保持同步，请勿单独手改；留空时自动回落读取「可选图片尺寸列表」。修改尺寸请用「可选图片尺寸列表」或聊天里的尺寸指令。",
+    "type": "list",
+    "default": [],
+    "invisible": true
+  },
+  "timeout": {
+    "description": "绘画接口超时时间（秒）",
+    "hint": "gpt-image 系模型出图较慢，建议 300-900 秒。",
+    "type": "int",
+    "default": 600
+  },
+  "start_prompt": {
+    "description": "开始绘画提示文案",
+    "hint": "可用变量：{提示词} {模型} {尺寸} {通道} {协议} {超时} {用户} {用户ID} {时间} {日期} {日期时间} {绘画指令} {编辑指令} {菜单指令} {批量位置} {画面比例}",
+    "type": "text",
+    "default": "🎨 收到，正在为你{prompt_type}…\n🧠 模型：{模型}（{协议}）\n📐 尺寸：{尺寸}\n⏳ 最长等待 {超时} 秒，请稍候～"
+  },
+  "done_prompt": {
+    "description": "绘画完成提示文案",
+    "hint": "可用变量：{数量} {耗时}（秒，保留 2 位小数） {模型} {尺寸} {通道} {协议} {提示词} {用户} {时间} {日期时间} {宽度} {高度} {像素数} {是否有成功} {是否有失败} 等。",
+    "type": "text",
+    "default": "✅ {prompt_type}完成！\n🖼 出图 {数量} 张\n⏱ 耗时 {耗时} 秒\n🧠 {模型} · {尺寸}"
+  },
+  "menu_text": {
+    "description": "菜单文案",
+    "hint": "可用变量：{分组菜单} {绘画指令} {编辑指令} {菜单指令} {模型菜单} {尺寸菜单} {协议菜单} {供应商菜单} {供应商} {协议} {群列表} {主人指令} {当前模型} {当前尺寸} {通道} {群状态} {触发方式} {冷却} {超时} {日期时间} {画面比例} {是否批量}",
+    "type": "text",
+    "default": "🎨 gpt-image-2.5绘画\n━━━━━━━━━━━━━━━\n🖌 绘画　{绘画指令} <内容>\n🖼 改图　{编辑指令} <内容> <图片>\n　　· 图片可用：直接发送 / 引用 / 图片链接 / @某人 头像\n　　· 批量出图：{绘画指令} 4张 一只猫\n　　· 多图编辑：{编辑指令} 融合两张图 <图1> <图2>\n━━━━━━━━━━━━━━━\n📊 当前配置\n　　{通道} · {协议}\n　　{当前模型}\n　　{当前尺寸} · 本群{群状态}\n━━━━━━━━━━━━━━━\n{分组菜单}\n━━━━━━━━━━━━━━━\n🧭 快捷入口\n　　{菜单指令}　{模型菜单}　{尺寸菜单}\n　　{协议菜单}　{供应商菜单}　{群列表}　帮助\n━━━━━━━━━━━━━━━\n👑 主人指令\n{主人指令}"
+  },
+  "draw_commands": {
+    "description": "绘画指令",
+    "hint": "可添加多个，每行一个。默认：绘画 / 画图（可删除）。",
+    "type": "list",
+    "default": [
+      "绘画",
+      "画图"
+    ]
+  },
+  "edit_commands": {
+    "description": "图片编辑指令",
+    "hint": "可添加多个，每行一个。默认：图片编辑 / 编辑图片（可删除）。",
+    "type": "list",
+    "default": [
+      "图片编辑",
+      "编辑图片"
+    ]
+  },
+  "menu_commands": {
+    "description": "菜单指令",
+    "type": "list",
+    "default": [
+      "绘画菜单",
+      "菜单"
+    ]
+  },
+  "masters": {
+    "description": "插件主人列表",
+    "hint": "填写用户 ID（QQ 号 / OpenID）。主人可使用切换模型、切换尺寸、群开关、添加主人等指令。",
+    "type": "list",
+    "default": []
+  },
+  "masters_use_astrbot_admin": {
+    "description": "AstrBot 管理员自动视为主人",
+    "type": "bool",
+    "default": true,
+    "hint": "开启时，AstrBot 管理员在群聊和私聊均具有主人权限。当前实现另有私聊管理员兜底，关闭此项也不会禁用该兜底。"
+  },
+  "master_commands": {
+    "description": "需要主人权限的指令",
+    "hint": "默认管理指令包括切换模型/尺寸/协议/供应商、群开关、增删主人/预设/菜单等。管理动作还按指令类型检查权限，删除列表项不会直接放开权限。",
+    "type": "list",
+    "default": [
+      "切换模型",
+      "切换尺寸",
+      "切换协议",
+      "切换供应商",
+      "添加尺寸",
+      "删除尺寸",
+      "群开关",
+      "添加主人",
+      "删除主人",
+      "重载配置",
+      "运行统计",
+      "重置设置",
+      "添加预设",
+      "删除预设",
+      "设置菜单",
+      "删除菜单"
+    ]
+  },
+  "enabled_platforms": {
+    "description": "生效的平台类型",
+    "hint": "留空表示全部平台生效。可在插件设置页一键获取当前已加载的平台适配器后勾选。",
+    "type": "list",
+    "default": [
+      "aiocqhttp",
+      "qq_official",
+      "qq_official_webhook"
+    ]
+  },
+  "enabled_bot_ids": {
+    "description": "生效的机器人实例 ID",
+    "hint": "留空表示该平台下所有机器人都生效。可在插件设置页一键获取后勾选，用于多机器人分别配置。",
+    "type": "list",
+    "default": []
+  },
+  "private_enabled": {
+    "description": "允许私聊使用",
+    "type": "bool",
+    "default": true
+  },
+  "group_mode": {
+    "description": "群聊模式",
+    "hint": "仅在 group_require_enable=false 时按此模式判断：all=所有群可用；whitelist=仅群列表可用；blacklist=群列表不可用。",
+    "type": "string",
+    "default": "all",
+    "options": [
+      "all",
+      "whitelist",
+      "blacklist"
+    ]
+  },
+  "group_list": {
+    "description": "群列表",
+    "hint": "配合群聊模式使用。可在插件设置页或群里用主人指令“群开关”维护。",
+    "type": "list",
+    "default": []
+  },
+  "max_input_images": {
+    "description": "单次最多输入图片数量",
+    "type": "int",
+    "default": 6
+  },
+  "max_concurrent": {
+    "description": "最大并发出图任务数",
+    "hint": "同时进行的绘画任务上限，超出后排队等待，避免打爆中转站。",
+    "type": "int",
+    "default": 2
+  },
+  "reply_reference_image": {
+    "description": "自动识别引用消息中的图片",
+    "hint": "开启后，引用一张图片并发送编辑指令，会自动把被引用的图片作为编辑素材。",
+    "type": "bool",
+    "default": true
+  },
+  "strict_trigger": {
+    "description": "误触发保护",
+    "hint": "开启后对指令与内容连写做额外判断，过滤部分闲聊误触发。建议用空格分隔指令与内容，例如「绘画 一只猫」。",
+    "type": "bool",
+    "default": true
+  },
+  "batch_max": {
+    "description": "批量出图上限（张）",
+    "hint": "文生图可用「绘画 4张 一只猫」重复请求，或多行提示词逐行请求；数量需带单位，单独 x4 不算批量。仅单条提示词按数量重复，编辑不拆分多行；超出上限会截取。范围 1～10，默认 4。",
+    "type": "int",
+    "default": 4
+  },
+  "size_auto_detect": {
+    "description": "自动识别提示词里的尺寸",
+    "hint": "仅在当前尺寸为 auto 时，从提示词识别比例、分辨率或宽高，例如「9:16」「4K」「2048x2048」；结果仍受协议尺寸规则约束，可能回落到可用尺寸。",
+    "type": "bool",
+    "default": true
+  },
+  "menu_sections": {
+    "description": "自定义菜单分组",
+    "hint": "结构：[{\"name\": \"分组名\", \"items\": [\"指令1\", \"指令2\"]}]。默认包含内置分组，显式空列表表示清空，不会恢复出厂分组。主人用「设置菜单/删除菜单」维护，「菜单列表」用于查看；文案用 {分组菜单} 展示。",
+    "type": "list",
+    "default": [
+      {
+        "name": "绘画与编辑",
+        "items": [
+          "绘画",
+          "图片编辑",
+          "重画",
+          "抽卡",
+          "预设列表",
+          "图片转提示词"
+        ]
+      },
+      {
+        "name": "模型与接口",
+        "items": [
+          "模型列表",
+          "切换模型",
+          "协议列表",
+          "切换协议",
+          "供应商列表",
+          "切换供应商"
+        ]
+      },
+      {
+        "name": "尺寸设置",
+        "items": [
+          "尺寸列表",
+          "切换尺寸",
+          "添加尺寸",
+          "删除尺寸"
+        ]
+      },
+      {
+        "name": "群与权限",
+        "items": [
+          "群列表",
+          "群开关",
+          "添加主人",
+          "删除主人"
+        ]
+      },
+      {
+        "name": "娱乐与统计",
+        "items": [
+          "排行",
+          "运行统计",
+          "我的ID"
+        ]
+      },
+      {
+        "name": "插件维护",
+        "items": [
+          "菜单列表",
+          "设置菜单",
+          "删除菜单",
+          "添加预设",
+          "删除预设",
+          "重载配置",
+          "重置设置"
+        ]
+      }
+    ]
+  },
+  "group_require_enable": {
+    "description": "群聊需要主人先开启",
+    "hint": "开启后仅 group_list 中的群可使用普通指令，优先于 group_mode；主人可在群内发送「开群」或「群开关 开」。我的ID、群列表及群开关等可绕过此限制，但仍受平台范围、黑名单和管理权限检查。",
+    "type": "bool",
+    "default": true
+  },
+  "user_blacklist": {
+    "description": "群友黑名单",
+    "hint": "名单内的用户无法使用本插件。支持「用户ID」或「平台实例ID|用户ID」（后者只屏蔽该机器人下的该用户）。",
+    "type": "list",
+    "default": []
+  },
+  "bot_overrides": {
+    "description": "机器人实例独立配置",
+    "hint": "结构：{\"平台实例ID\": {\"supplier\": \"...\", \"protocol\": \"...\", \"model\": \"...\", \"size\": \"...\"}}。未填的字段沿用全局配置，用于多机器人分别使用不同中转站/模型。",
+    "type": "dict",
+    "default": {}
+  },
+  "prompts": {
+    "description": "内置提示词库（预设）",
+    "hint": "结构：[{\"name\": \"名称\", \"text\": \"提示词正文\", \"tags\": [\"标签\"]}]。默认包含 core/presets.py 的内置库；显式空列表表示清空，不会恢复内置库。主人可用「添加预设/删除预设」维护，更新 schema 不会覆盖已保存的空列表。",
+    "type": "list",
+    "default": [
+      {
+        "name": "日系唯美奇幻插画",
+        "text": "参考图是角色人设图，为参考图的少女绘制一副日系唯美奇幻风格插画。 【构图】这是一个宏大的中景日系奇幻插画构图，画面中心是完全保留了完整细节的可爱少女，她站立在无边的、如镜面般平滑的水面中心。天空呈现出高饱和度的粉紫与深蓝交织，一条耀眼的蓝色巨型流星划破天际，配合着边缘发光的瑰丽层云。女孩处于背光状态，形成一个暗调但依然清晰可辨其服装和紫色明亮眼眸的剪影，被流星和星空的边缘光细腻勾勒，她微微仰头，一只手轻轻张开。下方的水面完美、对称地反射出整个壮丽的星空、流星、云彩，以及女孩清晰的倒影，点缀着微小的发光点，营造出天人合一、空灵静谧的唯美梦境意境。 【日系唯美奇幻风格说明】该风格以高饱和度的粉紫冷暖色调交织出浩瀚星空，并辅以壮丽的流星与边缘发光的层云作为视觉奇观；画面巧妙利用“天空之镜”般的完美水面反射，将宏大的宇宙背景与孤独静立的人物剪影相融合，通过极具电影感的光影渲染与高对比度的表现手法，营造出一种空灵、静谧且带有超现实宿命感的梦境氛围。 【要求】生成图片的比例9:16，分辨率 4k。这个则是插画艺术创作图",
+        "tags": [
+          "插画",
+          "奇幻",
+          "日系",
+          "唯美",
+          "竖版"
+        ]
+      },
+      {
+        "name": "手办化",
+        "text": "把参考图中的角色做成收藏级手办：1/7 比例 PVC 材质，人物站在透明圆形底座上，底座边缘有细微的镭射反光；棚拍纯色背景，主光从左上角 45 度打下，轮廓光勾出头发与衣摆边缘；皮肤呈现哑光质感，服装褶皱与金属配件保留高光；画面锐利、细节丰富，4K 商业产品摄影质感。保持角色五官、发型与服装配色与参考图一致。",
+        "tags": [
+          "手办",
+          "模型",
+          "产品",
+          "人像"
+        ]
+      },
+      {
+        "name": "电影感光影",
+        "text": "为画面加入电影级光影：黄昏逆光，暖橙色夕阳从主体背后低角度射入，空气中有可见的浮尘与轻微体积光；前景压暗形成画框式构图，主体面部保留柔和补光；整体青橙色调，高光轻微过曝，暗部保留细节而非死黑；加入浅景深与细微胶片颗粒，像 35mm 电影胶片的定格画面。",
+        "tags": [
+          "光影",
+          "电影",
+          "氛围",
+          "调色"
+        ]
+      },
+      {
+        "name": "赛博朋克",
+        "text": "赛博朋克夜景：高密度霓虹招牌与全息广告铺满背景，主色调为品红、青蓝与电紫；地面刚下过雨，积水反射出拉长的霓虹光带；人物穿机能风外套，身上有细小的发光配件；镜头带轻微光晕与色散，边缘泛紫边；低角度仰拍增强压迫感，整体冷色调、高对比、8K 细节。",
+        "tags": [
+          "赛博朋克",
+          "科幻",
+          "夜景",
+          "霓虹"
+        ]
+      },
+      {
+        "name": "国风水墨",
+        "text": "中国水墨风格：宣纸底纹，墨色浓淡分出远近层次，远山以淡墨晕染、留白成云海；近景几笔枯墨勾出松枝与飞鸟，主体用熟宣工笔勾勒轮廓再以淡彩罩染；画面一侧留出题款位置；整体气韵清冷，笔触可见飞白，像一幅当代水墨长卷的局部。",
+        "tags": [
+          "国风",
+          "水墨",
+          "东方",
+          "意境"
+        ]
+      },
+      {
+        "name": "像素风",
+        "text": "16-bit 像素艺术：限定 32 色调色板，主体与场景全部用清晰的方形像素块堆叠，边缘做轻微抗锯齿；背景用网格化渐变区分远近，加入两三个动态光点暗示；构图为斜 45 度等距视角，带一点复古掌机的扫描线质感；放大后依然锐利，不做模糊处理。",
+        "tags": [
+          "像素",
+          "复古",
+          "游戏",
+          "等距"
+        ]
+      },
+      {
+        "name": "二次元头像",
+        "text": "二次元头像：正面或四分之三侧脸，日系赛璐璐上色，头发分层高光带月牙形反光；眼睛用多段渐变与高光点表現通透感；背景做成柔和的糖果色渐变或半透明几何图形，主体居中且与背景保留清晰边缘；线条干净、色彩明快，正方形构图，适合直接作为社交头像。",
+        "tags": [
+          "头像",
+          "二次元",
+          "人像",
+          "方图"
+        ]
+      },
+      {
+        "name": "电商产品图",
+        "text": "电商主图风格：纯白或浅灰无缝背景，产品居中，四周留出约 15% 边距；两灯棚拍布光（主光加柔光箱、侧光压出高级感阴影），底部有自然的接触阴影；材质细节清晰可见（金属拉丝、玻璃通透、布料纹理）；整体明亮通透、无色偏，1:1 比例，可直接上架使用。",
+        "tags": [
+          "产品",
+          "电商",
+          "棚拍",
+          "方图"
+        ]
+      },
+      {
+        "name": "儿童绘本",
+        "text": "儿童绘本插画：手绘蜡笔与彩铅质感，线条圆润不平滑，色彩是低饱和的奶油色系；造型把主体夸张成圆头短肢的可爱比例，表情憨态可掬；背景简单留白，只点缀几片云、几朵花；整体温暖治愈，带一点点纸张颗粒感，横构图方便排版配文字。",
+        "tags": [
+          "绘本",
+          "儿童",
+          "手绘",
+          "治愈"
+        ]
+      },
+      {
+        "name": "古典油画",
+        "text": "古典油画：伦勃朗式明暗对照，暗褐色背景里只有一束柔光落在主体侧脸与肩部；笔触可见、颜料有厚度，暗部用透明罩染做出温润的层次；色彩以赭石、深红与灰蓝为主；画面带轻微老化纹理与清漆反光，像博物馆里一幅十七世纪写实肖像的局部。",
+        "tags": [
+          "油画",
+          "古典",
+          "肖像",
+          "写实"
+        ]
+      },
+      {
+        "name": "极简扁平",
+        "text": "极简扁平插画：只用三到四个纯色色块加一两个点缀色，去掉所有渐变与阴影；主体用几何图形概括，边缘圆角统一；大量留白，主体放在三分线交点；线条粗细一致，画面干净现代，适合做海报或应用启动页。",
+        "tags": [
+          "极简",
+          "扁平",
+          "海报",
+          "矢量"
+        ]
+      },
+      {
+        "name": "3D 渲染",
+        "text": "3D 卡通渲染：电影级三维软件风格，主体材质柔和、色彩高饱和，表面带轻微磨砂质感；使用三点布光加一块大面积柔光，阴影软而不散；背景为低饱和渐变或纯色，加入几个漂浮的小几何体增强空间感；整体像动画电影的静帧，画面干净、体积感强，8K 输出。",
+        "tags": [
+          "3D",
+          "渲染",
+          "卡通",
+          "立体"
+        ]
+      },
+      {
+        "name": "蒸汽波复古海报",
+        "text": "蒸汽波复古海报：粉紫渐变天空，居中一个大号网格地平线，太阳用粉橙同心圆表现；叠加录像带扫描线、轻微色差与噪点，整体像八十年代录像带画面的定格；画面下方留出一条干净的横排文字区域，方便后期排版。",
+        "tags": [
+          "蒸汽波",
+          "复古",
+          "海报",
+          "合成"
+        ]
+      },
+      {
+        "name": "治愈系微缩景观",
+        "text": "治愈系微缩景观：把主体缩小放进一个玻璃罩或苔藓小岛里，周围点缀迷你路灯、小树与石阶；移轴摄影效果，上下边缘做虚化处理，焦点只落在中间的主体上；光线是清晨的柔光，空气里有淡淡雾气；色彩清新、细节丰富，像桌面上一件可以捧在手心的小小世界。",
+        "tags": [
+          "微缩",
+          "治愈",
+          "移轴",
+          "场景"
+        ]
+      }
+    ]
+  },
+  "gacha_enabled": {
+    "description": "每日抽卡（盲盒绘画）",
+    "hint": "开启后，每人每天可用一次「抽卡」指令，随机画风 + 随机主题出图，稀有画风概率更低。",
+    "type": "bool",
+    "default": true
+  },
+  "gacha_styles": {
+    "description": "抽卡画风池",
+    "hint": "结构：[{\"name\": \"画风名\", \"text\": \"画风提示词\", \"rarity\": \"common/rare/epic\"}]。留空使用出厂画风池。",
+    "type": "list",
+    "default": []
+  },
+  "rank_enabled": {
+    "description": "绘画排行榜",
+    "hint": "开启后可用「排行」查看本周出图张数榜；关闭后调用会提示功能已关闭。",
+    "type": "bool",
+    "default": true
+  },
+  "flavor_enabled": {
+    "description": "出图文案（机器人性格）",
+    "hint": "开启后，出图时会在完成提示后追加一句随机的吐槽 / 夸赞，让机器人更有性格。",
+    "type": "bool",
+    "default": true
+  },
+  "flavor_lines": {
+    "description": "出图文案池",
+    "hint": "每行一条；留空使用出厂文案池。可用变量 {用户} {模型} {尺寸} {耗时} {日期时间} {画面比例} {像素数} {是否批量} 等。",
+    "type": "list",
+    "default": []
+  },
+  "translate_enabled": {
+    "description": "提示词翻译 / 润色",
+    "hint": "开启后，在出图前调用文本模型改写提示词，会增加文本接口调用。请填写可用的文本模型，生成效果取决于模型与提示词。",
+    "type": "bool",
+    "default": false
+  },
+  "translate_model": {
+    "description": "翻译使用的文本模型",
+    "hint": "请填写支持文本对话的模型，例如 gpt-4o-mini / gemini-2.5-flash。留空时当前代码沿用所选翻译供应商的生成模型，可能是图片模型。",
+    "type": "string",
+    "default": ""
+  },
+  "translate_supplier": {
+    "description": "翻译使用的供应商",
+    "hint": "留空表示使用当前供应商；填写供应商名称可让翻译走另一家中转站。",
+    "type": "string",
+    "default": ""
+  },
+  "translate_prompt_text": {
+    "description": "翻译系统提示词",
+    "hint": "留空使用内置的绘画提示词工程师提示词。",
+    "type": "text",
+    "default": ""
+  },
+  "img2prompt_enabled": {
+    "description": "图片转提示词",
+    "hint": "开启后，发送「图片转提示词」并附图，可用视觉模型反推该图可能的提示词（需要供应商支持多模态对话接口）。",
+    "type": "bool",
+    "default": false
+  },
+  "img2prompt_model": {
+    "description": "图片转提示词使用的视觉模型",
+    "hint": "请填写支持图片输入的视觉模型，例如 gpt-4o / gemini-2.5-flash；留空时先使用 translate_model，再沿用当前通道模型，可能是图片模型。",
+    "type": "string",
+    "default": ""
+  },
+  "_suppliers_sync": {
+    "description": "供应商同步摘要（插件自动维护）",
+    "type": "dict",
+    "default": {},
+    "invisible": true
+  },
+  "nested": {
+    "description": "旧版嵌套配置（迁移兼容）",
+    "type": "dict",
+    "default": {},
+    "invisible": true
+  },
+  "channels": {
+    "description": "旧版通道配置（迁移兼容）",
+    "type": "list",
+    "default": [],
+    "invisible": true
+  },
+  "_sizes_sync": {
+    "description": "尺寸同步标记（插件自动维护，请勿手动修改）",
+    "hint": "插件内部用于判断用户改的是 sizes 还是 image_sizes，请勿手动修改。",
+    "type": "list",
+    "default": [],
+    "invisible": true
+  }
+}
