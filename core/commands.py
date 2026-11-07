@@ -1110,11 +1110,10 @@ def _strict_content_match(name: str, remainder: str) -> bool:
         return False
     if raw[0] in _CONTENT_SEPARATORS:
         return _is_meaningful_content(raw)
-    if raw[0].isascii() and raw[0].isalnum():
-        # ASCII 紧接：例如 img2cat 这种要排除；
-        # 但用户写「绘画1张图」也合理，允许后面跟中文
-        rest = raw[1:]
-        return bool(rest) and not rest[0].isascii()
+    if _is_ascii_alnum(raw[0]):
+        # 中文指令已形成边界，后续 4K、1080p 或英文描述都是完整提示词。
+        # 英文/数字结尾的别名仍需分隔，避免把 img2cat 误当作 img 指令。
+        return not _should_skip_prefix(name, raw) and _is_meaningful_content(raw)
     if raw[0] in "。！？；;、":
         return False
     if _STRUCTURED_HEAD_RE.match(raw):
@@ -1129,8 +1128,8 @@ def parse_command(text: str, cfg: Any) -> Optional[ParsedCommand]:
 
     1. 完全相等：text == 指令名；
     2. 空白分隔：text 以「指令名 + 空格」开头（换行、全角空格已折叠成空格）；
-    3. 内容型指令（绘画/图片编辑）允许直接续写内容，例如
-       「绘画广州塔宣传图」会被解析成 KIND_DRAW，arg = 广州塔宣传图。
+    3. 中文内容型指令（绘画/图片编辑/视频）允许直接续写中英文内容，例如
+       「文生视频4K广州塔夜景」会被解析成 KIND_VIDEO，arg = 4K广州塔夜景。
     4. 菜单别名可带分组参数或连写已知分组；分组参数保留原始大小写与内部空白。
     5. 无指令命中时，仅完整分组名可直接查询；序号和唯一子串须带菜单前缀。
 

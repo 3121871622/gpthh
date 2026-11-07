@@ -230,6 +230,66 @@ class VideoLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._mark_cooldown.assert_not_called()
         self.assertIn("10s", self.plugin._reply.await_args.args[1])
 
+    async def test_full_4k_prompt_triggers_and_submits_exact_text(self):
+        prompt = (
+            "4K电影级推广视频，广州塔夜景，绚丽霓虹灯光，珠江波光倒影，"
+            "无人机环绕流畅运镜，繁华都市夜景，氛围感强烈，城市地标，"
+            "色彩鲜亮，画面顺滑无闪烁，无文字、无水印，商业宣传片风格"
+        )
+        self.plugin.cfg.strict_trigger = lambda: True
+        event = FakeEvent(message="文生视频" + prompt)
+        event.is_at_or_wake_command = True
+        command_filter = MAIN_GLOBALS["_DrawingCommandFilter"]()
+        self.assertTrue(command_filter.filter(event, None))
+        await self.plugin._handle(event)
+        self.assertIn("回复视频时长", self.plugin._reply.await_args.args[1])
+        self.assertEqual(self.plugin._video_inputs[self.plugin._video_key(event)].prompt, prompt)
+        self.assertFalse(FakeClient.instances)
+        self.assertFalse(self.plugin._video_tasks)
+        reply = FakeEvent(message="10s")
+        # 已开始的两步交互允许同一会话同一用户直接回复秒数。
+        self.assertTrue(command_filter.filter(reply, None))
+        await self.plugin._handle(reply)
+        await self.finish()
+        self.assertEqual(len(FakeClient.instances), 1)
+        client = FakeClient.instances[0]
+        self.assertEqual((client.submits, client.seconds, client.prompt), (1, 10, prompt))
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(self.plugin._video_pending)
+
+    async def test_8000_character_prompt_passes_entry_without_truncation(self):
+        prompt = "4K" + "景" * 7998
+        self.assertEqual(len(prompt), 8000)
+        self.plugin.cfg.strict_trigger = lambda: True
+        event = FakeEvent(message="文生视频" + prompt)
+        event.is_at_or_wake_command = True
+        self.assertTrue(MAIN_GLOBALS["_DrawingCommandFilter"]().filter(event, None))
+        await self.plugin._handle(event)
+        self.assertIn("回复视频时长", self.plugin._reply.await_args.args[1])
+        self.assertEqual(self.plugin._video_inputs[self.plugin._video_key(event)].prompt, prompt)
+        self.assertFalse(FakeClient.instances)
+        await self.confirm("10s")
+        await self.finish()
+        self.assertEqual(len(FakeClient.instances), 1)
+        self.assertEqual(FakeClient.instances[0].prompt, prompt)
+        self.assertEqual(FakeClient.instances[0].seconds, 10)
+
+    async def test_8001_character_prompt_replies_with_limit_at_entry(self):
+        prompt = "4K" + "景" * 7999
+        self.assertEqual(len(prompt), 8001)
+        self.plugin.cfg.strict_trigger = lambda: True
+        event = FakeEvent(message="文生视频" + prompt)
+        event.is_at_or_wake_command = True
+        self.assertTrue(MAIN_GLOBALS["_DrawingCommandFilter"]().filter(event, None))
+        await self.plugin._handle(event)
+        self.plugin._reply.assert_awaited_once()
+        self.assertIn("最多 8000 个字符", self.plugin._reply.await_args.args[1])
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(FakeClient.instances)
+        self.assertFalse(self.plugin._video_tasks)
+        MAIN_GLOBALS["extract_image_urls"].assert_not_awaited()
+        MAIN_GLOBALS["collect_input_images"].assert_not_awaited()
+
     async def test_submit_once_uses_duration_reply_event(self):
         await self.begin()
         reply = await self.confirm("10s")
