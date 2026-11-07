@@ -206,7 +206,7 @@ function textOf(node) { return (node.textContent || '') + node.children.map(text
   assert.match(html, /id="section-videos"/);
   assert.match(html, /id="videos-body"/);
   assert.match(html, /href="\.\/style\.css\?v=1\.0\.10"/);
-  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10"/);
+  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=supplier-models-1"/);
   assert.match(source, /FALLBACK_VERSION = "1\.0\.10"/);
 
   api.state.config.video_supplier = '';

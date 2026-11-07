@@ -674,18 +674,25 @@ def _set_model_cache(
     while len(cache) > 64:
         cache.pop(next(iter(cache)))
 
-def _protocol_model(plugin: Any, cfg: Any, name: str, protocol: str, model: str = "") -> Optional[Channel]:
-    """按「供应商 + 协议 + 模型」组装一个可直接请求的通道。"""
-    builder = getattr(cfg, "build_channel", None)
-    if callable(builder):
-        try:
-            channel = builder(supplier=name, protocol=protocol, model=model)
-        except Exception:  # noqa: BLE001
-            channel = None
-        if isinstance(channel, Channel):
-            return channel
-
-    base = _get_supplier(cfg, name)
+def _protocol_model(
+    plugin: Any, cfg: Any, name: str, protocol: str, model: str = "", *,
+    exact_supplier: bool = False,
+) -> Optional[Channel]:
+    """按「供应商 + 协议 + 模型」组装通道；目录查询使用已保存的准确名称。"""
+    if exact_supplier:
+        # 设置页传入名称而非聊天序号，避免数字名称或近似名称选到别家。
+        target = _text(name)
+        base = next((item for item in _existing_suppliers(cfg) if item.name == target), None)
+    else:
+        builder = getattr(cfg, "build_channel", None)
+        if callable(builder):
+            try:
+                channel = builder(supplier=name, protocol=protocol, model=model)
+            except Exception:  # noqa: BLE001
+                channel = None
+            if isinstance(channel, Channel):
+                return channel
+        base = _get_supplier(cfg, name)
     if base is None:
         return None
     return Channel(
@@ -2115,6 +2122,7 @@ async def _api_list_models(plugin: Any) -> Any:
             {
                 "ok": False,
                 "data": {
+                    "ok": False,
                     **_model_page_fields([], page, page_size),
                     "supplier": supplier,
                     "protocol": protocol,
@@ -2128,21 +2136,16 @@ async def _api_list_models(plugin: Any) -> Any:
         )
     full_directory = include_all or bool(purpose)
     scope = purpose or ("all" if full_directory else "image")
-    channel = _protocol_model(plugin, cfg, supplier, protocol)
+    channel = _protocol_model(plugin, cfg, supplier, protocol, exact_supplier=True)
     cached = _model_cache(cfg, channel, scope) if channel is not None else []
-    fallback: List[str] = []
-    if not full_directory:
-        for method in ("model_for", "edit_model_for"):
-            value = _call_text(cfg, method, protocol)
-            if value and value not in fallback:
-                fallback.append(value)
 
     if channel is None:
-        models = fallback
+        models: List[str] = []
         return json_response(
             {
                 "ok": False,
                 "data": {
+                    "ok": False,
                     **_model_page_fields(models, page, page_size),
                     "supplier": supplier,
                     "protocol": protocol,
@@ -2157,8 +2160,9 @@ async def _api_list_models(plugin: Any) -> Any:
             {
                 "ok": True,
                 "data": {
+                    "ok": True,
                     **_model_page_fields(
-                        cached if full_directory else _dedupe(cached + fallback),
+                        cached,
                         page,
                         page_size,
                     ),
@@ -2186,7 +2190,7 @@ async def _api_list_models(plugin: Any) -> Any:
             raw_models = await protocol_obj.list_models()
         models = _model_names(raw_models)
     except Exception as exc:  # noqa: BLE001 - 前端需要展示错误信息
-        models = _dedupe(cached + fallback)
+        models = list(cached)
         message = "%s: %s" % (type(exc).__name__, exc)
         if full_directory and getattr(exc, "status", None) in (404, 405, 501):
             message = "该供应商不支持当前协议的完整模型目录，请手动填写模型。%s" % message
@@ -2194,6 +2198,7 @@ async def _api_list_models(plugin: Any) -> Any:
             {
                 "ok": False,
                 "data": {
+                    "ok": False,
                     **_model_page_fields(models, page, page_size),
                     "supplier": channel.name,
                     "protocol": protocol,
@@ -2210,11 +2215,12 @@ async def _api_list_models(plugin: Any) -> Any:
                 pass
 
     if not models:
-        models = _dedupe(cached + fallback)
+        models = list(cached)
         return json_response(
             {
                 "ok": False,
                 "data": {
+                    "ok": False,
                     **_model_page_fields(models, page, page_size),
                     "supplier": channel.name,
                     "protocol": protocol,
@@ -2224,18 +2230,19 @@ async def _api_list_models(plugin: Any) -> Any:
             }
         )
 
-    merged = models if full_directory else _dedupe(models + cached + fallback)
-    if merged != cached:
-        _set_model_cache(cfg, channel, scope, merged)
+    # 在线成功结果仅来自本次供应商响应，刷新时移除已下架的旧模型。
+    if models != cached:
+        _set_model_cache(cfg, channel, scope, models)
     return json_response(
         {
             "ok": True,
             "data": {
-                **_model_page_fields(merged, page, page_size),
+                "ok": True,
+                **_model_page_fields(models, page, page_size),
                 "supplier": channel.name,
                 "protocol": protocol,
                 "cached": False,
-                "message": "已获取 %d 个模型" % len(merged),
+                "message": "已获取 %d 个模型" % len(models),
             },
         }
     )

@@ -516,7 +516,18 @@ function unwrap(res) {
 async function apiGet(endpoint, params) {
   if (!bridge) throw new Error("bridge 未注入：请从 AstrBot 插件页面打开本页");
   const res = await bridge.apiGet(endpoint, params || {});
-  if (endpoint === "models") return readModelsResponse(res);
+  if (endpoint === "models") {
+    const result = readModelsResponse(res);
+    const wantedSupplier = String((params && params.supplier) || "").trim();
+    const wantedProtocol = String((params && params.protocol) || "").trim();
+    // 响应身份必须与请求一致，避免将其他供应商目录写入当前缓存。
+    if ((result.supplier && wantedSupplier && result.supplier !== wantedSupplier)
+      || (result.protocol && wantedProtocol && result.protocol !== wantedProtocol)) {
+      return { ...result, ok: false, models: [], total: 0, cached: false,
+        message: "模型目录来源与所选供应商或协议不一致，请刷新页面后重试" };
+    }
+    return result;
+  }
   return unwrap(res);
 }
 
@@ -587,8 +598,12 @@ function readModelsResponse(response) {
     .find((value) => value);
   const cached = layers.map((layer) => layer && (layer.cached === true || layer.from_cache === true || layer.fromCache === true))
     .find((value) => value === true) === true;
+  const supplier = layers.map((layer) => layer && typeof layer.supplier === "string" ? layer.supplier.trim() : "").find(Boolean) || "";
+  const protocol = layers.map((layer) => layer && typeof layer.protocol === "string" ? layer.protocol.trim() : "").find(Boolean) || "";
   return {
     ok: !failed && models.length > 0,
+    supplier,
+    protocol,
     models,
     message,
     total: Number.isFinite(total) ? total : models.length,
@@ -638,13 +653,14 @@ function loadModelCache(config, activeSupplier) {
     const parsedResponse = readModelsResponse(value);
     const models = parsedResponse.models;
     if (!models.length) return;
-    let supplier = activeSupplier;
-    let protocol = key;
+    // 只有带供应商身份的缓存才能恢复；旧协议缓存的来源无法确认。
+    let supplier = "";
+    let protocol = "";
     try {
       const parsed = JSON.parse(key);
       if (Array.isArray(parsed)) {
-        supplier = String(parsed[0] || supplier);
-        protocol = String(parsed[1] || protocol);
+        supplier = String(parsed[0] || "").trim();
+        protocol = String(parsed[1] || "").trim();
       }
     } catch (error) {
       const parts = key.split("::");
@@ -653,7 +669,7 @@ function loadModelCache(config, activeSupplier) {
         protocol = parts[1];
       }
     }
-    if (PROTOCOL_KEYS.includes(protocol)) {
+    if (supplier && PROTOCOL_KEYS.includes(protocol)) {
       const cacheKey = modelCacheKey(supplier, protocol);
       state.modelCache[cacheKey] = models;
       state.modelMeta[cacheKey] = {
@@ -1928,7 +1944,7 @@ function createSupplierCard(supplier, index) {
         setResult(resultBox, "正在获取模型列表（读取的是已保存的供应商配置，请先保存）…", "info");
          try {
             const targetName = String(supplier.name || "").trim();
-           const modelResult = await apiGet("models", { supplier: targetName, protocol: targetProtocol, refresh: 1 });
+           const modelResult = await apiGet("models", { supplier: targetName, protocol: targetProtocol, include_all: 1, refresh: 1 });
            if (!modelResult.ok) {
              setSupplierDiagnostic(targetName, targetProtocol, { ok: false, message: modelResult.message || "模型接口返回失败" });
              if (state.modelCache[modelCacheKey(targetName, targetProtocol)] && state.modelCache[modelCacheKey(targetName, targetProtocol)].length) {
@@ -2163,8 +2179,8 @@ function createModelSection() {
             setResult(resultBox, "✅ 获取到 " + modelResult.models.length + " 个模型 · 更新于 " + formatModelFetchedAt(modelMetaFor(supplierName, protocol).fetchedAt), "ok");
             renderModelPicker(supplierName, modelResult.models, pickerHost);
           }
+          // 保留刚获取的目录和提示，整区重绘会立即清空此面板。
           paintSummary();
-          renderSuppliers();
         } catch (error) {
           setSupplierDiagnostic(supplierName, protocol, { ok: false, message: errText(error) });
           setResult(resultBox, "❌ 获取失败：" + errText(error), "err");
