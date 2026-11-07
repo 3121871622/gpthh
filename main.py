@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import tempfile
 import uuid
 from typing import Any
 
@@ -34,6 +35,7 @@ from .core.commands import (
     KIND_DEL_SIZE,
     KIND_DRAW,
     KIND_EDIT,
+    KIND_VIDEO,
     KIND_GROUP_OFF,
     KIND_GROUP_ON,
     KIND_GROUPS,
@@ -90,8 +92,13 @@ from .core.presets import (
 from .core.state import SessionState
 from .core.stats import PluginStats
 from .core.webapi import register_web_apis
+from .core.videos import VideoClient, VideoError
+from .core.video_progress import (
+    VIDEO_CANCEL_WORDS, VideoImageConfig, VideoInput, VideoProgress,
+    is_video_duration_reply, parse_video_seconds,
+)
 
-PLUGIN_VERSION = "1.0.8"
+PLUGIN_VERSION = "1.0.9"
 
 #: 不受「群开关 / 私聊开关」限制的指令类型（管理类，仍需主人权限）
 _SCOPE_EXEMPT_KINDS = frozenset(
@@ -118,7 +125,7 @@ _OVERRIDE_LABELS = {
 }
 
 #: 冷却提示文案模板
-_COOLDOWN_HINT = "⏳ 请稍等，冷却中还需 {seconds} 秒才能再次使用绘画 / 图片编辑。"
+_COOLDOWN_HINT = "⏳ 请稍等，冷却中还需 {seconds} 秒才能再次使用绘画 / 图片编辑 / 视频生成。"
 
 #: 本群已关闭时的反馈（避免用户以为机器人失灵）
 _GROUP_OFF_HINT = (
@@ -321,10 +328,14 @@ class _DrawingCommandFilter(filter.CustomFilter):
             text = event.get_message_str()
         except Exception:  # noqa: BLE001
             return False
-        if plugin._menu_command_override(text) is None and not parse_command(text, plugin.cfg):
+        video_reply = plugin._video_input_matches(event, text)
+        if not video_reply and plugin._menu_command_override(text) is None and not parse_command(text, plugin.cfg):
             return False
         if plugin._is_duplicate_event(event):
             return False
+        # 时长回复属于已唤醒的交互，仅放行原会话原用户，仍在入口复查权限。
+        if video_reply:
+            return True
         # 触发方式一：command 模式 —— 只要「消息以指令开头」就响应，
         # 不需要 @ 机器人，也不需要唤醒前缀。
         try:
@@ -374,6 +385,11 @@ class Main(star.Star):
         #: 最近交互过的用户 / 群（供设置页「一键获取」使用），最新在前
         self.recent_users: list = []
         self.recent_groups: list = []
+        #: 视频任务独立计数，避免长轮询占用绘画的并发额度。
+        self._video_tasks: set = set()
+        self._video_pending: set = set()
+        self._video_inputs: dict = {}
+        self._video_closing = False
 
     # --------------------------------------------------------------- 生命周期
     async def initialize(self) -> None:
@@ -405,6 +421,18 @@ class Main(star.Star):
 
     async def terminate(self) -> None:
         _DrawingCommandFilter.plugin = None
+        self._video_closing = True
+        for pending in tuple(self._video_inputs.values()):
+            if pending.timer is not None:
+                pending.timer.cancel()
+        self._video_inputs.clear()
+        tasks = tuple(self._video_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._video_tasks.clear()
+        self._video_pending.clear()
 
     # ------------------------------------------------------------ 数据目录
     @staticmethod
@@ -611,9 +639,13 @@ class Main(star.Star):
     # ---------------------------------------------------------------- 分发逻辑
     async def _handle(self, event: AstrMessageEvent) -> None:
         raw_text = event.get_message_str()
-        parsed = self._menu_command_override(raw_text)
-        if parsed is None:
-            parsed = parse_command(raw_text, self.cfg)
+        video_reply = self._video_input_matches(event, raw_text)
+        if video_reply:
+            parsed = ParsedCommand(kind=KIND_VIDEO, arg=raw_text, raw=raw_text, command="视频时长")
+        else:
+            parsed = self._menu_command_override(raw_text)
+            if parsed is None:
+                parsed = parse_command(raw_text, self.cfg)
         if parsed is None:
             return
 
@@ -640,6 +672,12 @@ class Main(star.Star):
             await self._reply(event, "🔒 该指令仅主人可用。")
             return
 
+        if kind == KIND_VIDEO:
+            if video_reply:
+                await self._video_duration_reply(event, raw_text)
+            else:
+                await self._video(event, parsed)
+            return
         if kind in (KIND_DRAW, KIND_EDIT):
             await self._draw(event, parsed)
             return
@@ -982,6 +1020,288 @@ class Main(star.Star):
                 info["bot_override"] = overrides
         info.update(self._template_vars(event, info))
         return info
+
+    # ------------------------------------------------------------ 异步视频
+    @staticmethod
+    def _video_key(event: AstrMessageEvent) -> tuple:
+        return (_text_of(event.unified_msg_origin), _text_of(event.get_sender_id()))
+
+    def _discard_video_input(self, key: tuple, expected: Any = None) -> None:
+        pending = self._video_inputs.get(key)
+        if pending is None or (expected is not None and pending is not expected):
+            return
+        self._video_inputs.pop(key, None)
+        if pending.timer is not None:
+            pending.timer.cancel()
+
+    def _video_input_matches(self, event: AstrMessageEvent, text: str) -> bool:
+        key = self._video_key(event)
+        pending = self._video_inputs.get(key)
+        if pending is None:
+            return False
+        if self._video_closing or time.monotonic() >= pending.expires_at:
+            self._discard_video_input(key, pending)
+            return False
+        return is_video_duration_reply(_clean_prompt(text))
+
+    async def _video(self, event: AstrMessageEvent, parsed: ParsedCommand) -> None:
+        """先收集描述与单张参考图，等待同一用户回复时长后才提交。"""
+        if self._video_closing:
+            await self._reply(event, "插件正在重载，请稍后再生成视频。")
+            return
+        if not self.cfg.video_enabled():
+            await self._reply(event, "视频生成当前未启用，请在插件设置中开启。")
+            return
+        if not self.cfg.video_model().strip():
+            await self._reply(event, "请先在插件设置中填写视频模型名称，再发送视频生成指令。")
+            return
+        prompt = _clean_prompt(parsed.arg)
+        if not prompt:
+            await self._reply(event, "请补上视频内容，例如：文生视频 大草原；图生视频请同时发送或引用一张图片。")
+            return
+        if len(prompt) > 8000:
+            await self._reply(event, "视频提示词最多 8000 个字符，请缩短后重试。")
+            return
+        key = self._video_key(event)
+        if key in self._video_pending:
+            await self._reply(event, "你在当前会话已有一个视频任务，请等待完成后再提交。")
+            return
+        existing = self._video_inputs.get(key)
+        if existing is not None and time.monotonic() < existing.expires_at:
+            await self._reply(event, "你有一个视频描述正在等待时长，请回复秒数，或发送「取消」后重新输入。")
+            return
+        self._discard_video_input(key)
+        if len(self._video_inputs) >= 32:
+            await self._reply(event, "等待输入时长的请求较多，请稍后重新发送视频描述。")
+            return
+        cooldown_left = self._cooldown_left(event)
+        if cooldown_left > 0:
+            await self._reply(event, _COOLDOWN_HINT.format(seconds=cooldown_left))
+            return
+        timeout = self.cfg.video_duration_timeout()
+        pending = VideoInput(prompt, parsed.command, time.monotonic() + timeout)
+        self._video_inputs[key] = pending
+        pending.timer = asyncio.get_running_loop().call_later(
+            timeout, self._discard_video_input, key, pending,
+        )
+        try:
+            stripped, links = await extract_image_urls(prompt)
+            if links:
+                prompt = _clean_prompt(stripped)
+            images = await collect_input_images(event, VideoImageConfig(self.cfg))
+        except Exception as exc:  # noqa: BLE001 - 采图失败必须停止，避免误发文生任务
+            self._discard_video_input(key, pending)
+            logger.warning("[gpt-image] 视频参考图读取失败：%s" % type(exc).__name__)
+            await self._reply(event, "读取视频参考图失败，请重新发送图片和指令。")
+            return
+        if self._video_inputs.get(key) is not pending or self._video_closing:
+            return
+        reason = ""
+        if len(images) > 1:
+            reason = "图生视频一次只支持一张参考图，请只发送或引用一张图片。"
+        elif images and len(getattr(images[0], "data", b"")) > 20 * 1024 * 1024:
+            reason = "视频参考图超过 20 MiB，请压缩后重新发送。"
+        elif parsed.command == "图生视频" and not images:
+            reason = "图生视频需要一张参考图，请在同一消息发送图片，或引用图片后发送「图生视频 + 内容」。"
+        elif links and not images:
+            reason = "未能读取提示词中的参考图链接，请重新发送一张可读取的图片。"
+        elif parsed.command == "文生视频" and images:
+            reason = "已检测到参考图，请改用「图生视频 + 内容」；文生视频请只发送文字。"
+        elif not prompt:
+            reason = "请补上画面和运动描述，例如：图生视频 镜头缓慢推进。"
+        if reason:
+            self._discard_video_input(key, pending)
+            await self._reply(event, reason)
+            return
+        pending.prompt, pending.images, pending.ready = prompt, tuple(images), True
+        mode = "图生视频" if images else "文生视频"
+        await self._reply(
+            event,
+            "🎬 已收到%s描述，请在 %d 秒内回复视频时长（1–120 秒）。\n"
+            "例如：10、10s 或 10秒。发送「取消」退出；回复时长后才会提交任务。"
+            % (mode, timeout),
+        )
+
+    async def _video_duration_reply(self, event: AstrMessageEvent, text: str) -> None:
+        key = self._video_key(event)
+        pending = self._video_inputs.get(key)
+        if pending is None or time.monotonic() >= pending.expires_at:
+            self._discard_video_input(key, pending)
+            await self._reply(event, "视频时长输入已超时，请重新发送视频描述。")
+            return
+        text = _clean_prompt(text)
+        if text.lower() in VIDEO_CANCEL_WORDS:
+            self._discard_video_input(key, pending)
+            await self._reply(event, "已取消本次视频生成，未提交任务。")
+            return
+        if not pending.ready:
+            await self._reply(event, "正在读取参考图，请稍后再回复视频时长。")
+            return
+        try:
+            seconds = parse_video_seconds(text)
+        except ValueError as exc:
+            await self._reply(event, str(exc))
+            return
+        if self._video_closing or not self.cfg.video_enabled():
+            self._discard_video_input(key, pending)
+            await self._reply(event, "视频生成当前不可用，请稍后重新发送指令。")
+            return
+        if not self.cfg.video_model().strip():
+            await self._reply(event, "请先在插件设置中填写视频模型名称，再回复时长。")
+            return
+        cooldown_left = self._cooldown_left(event)
+        if cooldown_left > 0:
+            await self._reply(event, _COOLDOWN_HINT.format(seconds=cooldown_left))
+            return
+        if key in self._video_pending or len(self._video_pending) >= self.cfg.video_max_concurrent():
+            await self._reply(event, "视频任务已达到并发上限，请稍后再回复时长。")
+            return
+        # 消费等待输入、预留容量、创建后台任务之间不 await，避免重复提交。
+        self._discard_video_input(key, pending)
+        self._video_pending.add(key)
+        task = asyncio.create_task(
+            self._run_video(event, pending.prompt, seconds, pending.images), name="gpt-image-video",
+        )
+        self._video_tasks.add(task)
+        task.add_done_callback(lambda finished: self._video_done(finished, key))
+
+    def _video_done(self, task: Any, key: tuple) -> None:
+        self._video_tasks.discard(task)
+        self._video_pending.discard(key)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                # 不记录底层异常内容，HTTP 异常可能携带认证头或签名地址。
+                logger.error("[gpt-image] 视频后台任务异常：%s" % type(error).__name__)
+
+    async def _run_video(self, event: AstrMessageEvent, prompt: str, seconds: int, images: tuple = ()) -> None:
+        session_id = uuid.uuid4().hex[:12]
+        started = time.monotonic()
+        model = self.cfg.video_model()
+        supplier = ""
+        remote_id = ""
+        phase = "准备"
+        progress = None
+        try:
+            # 反馈与后续结果共用同一后台协程，避免快速失败先于“正在提交”出现。
+            try:
+                await asyncio.wait_for(event.send(event.plain_result(
+                    "🎬 已收到 %d 秒，正在提交视频任务，请稍候；不会重复提交。" % seconds
+                )), timeout=5)
+            except Exception:  # noqa: BLE001 - 提示发送失败不影响已登记的后台任务
+                pass
+            info = await self._state_view(event)
+            channel = info.get("channel")
+            selected = self.cfg.video_supplier()
+            if selected:
+                channel = self.cfg.build_channel(
+                    supplier=selected, protocol="openai", model=model
+                )
+            ready, reason = _channel_ready(channel)
+            if not ready:
+                await self._reply(event, reason)
+                return
+            supplier = _text_of(getattr(channel, "name", ""))
+            self._mark_cooldown(event)
+            self.stats.record_start(session_id=session_id, kind="video")
+            # 沿用用户启用的文本改写；is_edit=True 避免翻译失败时套用图片专用结构。
+            final_prompt = await self._maybe_translate(channel, prompt, True)
+            phase = "提交"
+            async with VideoClient(
+                base_url=channel.base_url,
+                api_key=channel.api_key,
+                api_mode=self.cfg.video_api_mode(),
+                timeout=self.cfg.video_timeout(),
+                poll_interval=self.cfg.video_poll_interval(),
+                proxy=self.cfg.proxy(),
+            ) as client:
+                task = await client.submit(final_prompt, model, seconds=seconds, images=images)
+                remote_id = task.id
+
+                async def send_progress(message: str) -> None:
+                    await event.send(event.plain_result(message))
+
+                progress = VideoProgress(
+                    send_progress, prompt=prompt, model=model, seconds=seconds,
+                    interval=self.cfg.video_progress_interval(), started=started,
+                    start_template=self.cfg.video_start_prompt(),
+                    progress_template=self.cfg.video_progress_prompt(),
+                    done_template=self.cfg.video_done_prompt(),
+                )
+                await progress.start(task)
+                phase = "生成"
+                result = await client.wait(task, on_progress=progress.update)
+                if result.status == "cancelled":
+                    await progress.stop()
+                    self.stats.record_cancel(
+                        session_id=session_id, kind="video", model=model,
+                        supplier=supplier, seconds=time.monotonic() - started,
+                        error="上游已取消视频任务",
+                    )
+                    await self._reply(event, "视频任务已被上游取消。任务 ID：%s" % remote_id)
+                    return
+                if result.status != "completed":
+                    raise VideoError("视频任务未成功完成。任务 ID：%s" % remote_id)
+                phase = "投递"
+                await self._deliver_video(event, client, result, on_ready=progress.complete)
+            self.stats.record_success(
+                session_id=session_id, kind="video", images=0, model=model,
+                protocol="video_" + self.cfg.video_api_mode(), supplier=supplier,
+                seconds=time.monotonic() - started,
+            )
+        except asyncio.CancelledError:
+            if progress is not None:
+                await progress.stop()
+            if self.stats.has_session(session_id):
+                self.stats.record_cancel(
+                    session_id=session_id, kind="video", model=model,
+                    supplier=supplier, seconds=time.monotonic() - started,
+                    error="插件卸载或重载，已停止本地轮询；上游任务可能继续运行",
+                )
+            raise
+        except Exception as exc:  # noqa: BLE001 - 后台异常必须落统计且释放容量
+            if progress is not None:
+                await progress.stop()
+            detail = str(exc) if isinstance(exc, VideoError) else type(exc).__name__
+            message = ("视频已生成，但投递失败" if phase == "投递" else "视频%s失败" % phase)
+            message += "：" + detail
+            if remote_id:
+                message += "\n任务 ID：%s（不会自动重新提交生成任务）" % remote_id
+            if self.stats.has_session(session_id):
+                self.stats.record_failure(
+                    session_id=session_id, kind="video", images=0, model=model,
+                    protocol="video_" + self.cfg.video_api_mode(), supplier=supplier,
+                    seconds=time.monotonic() - started, error=message,
+                )
+            logger.warning("[gpt-image] 视频%s失败：%s" % (phase, type(exc).__name__))
+            await self._reply(event, message)
+        finally:
+            if progress is not None:
+                await progress.stop()
+
+    @staticmethod
+    async def _deliver_video(event: AstrMessageEvent, client: Any, result: Any, on_ready: Any = None) -> None:
+        """视频组件不可投递时发送链接；两种方式均失败才记为投递失败。"""
+        from astrbot.api.message_components import Video
+
+        if result.url:
+            if on_ready is not None:
+                await on_ready()
+            try:
+                await event.send(event.chain_result([Video.fromURL(result.url)]))
+                return
+            except Exception:  # noqa: BLE001 - 不支持视频组件的平台仍能收取链接
+                await event.send(event.plain_result(
+                    "🎬 视频生成完成，当前平台未能发送视频，请通过链接查看：\n"
+                    + result.url + "\n任务 ID：" + result.id
+                ))
+                return
+        # OpenAI 风格接口的 /content 需要认证；只上传临时文件，不把密钥放进链接。
+        with tempfile.TemporaryDirectory(prefix="gpt-image-video-") as directory:
+            path = await client.download(result, directory)
+            if on_ready is not None:
+                await on_ready()
+            await event.send(event.chain_result([Video.fromFileSystem(str(path))]))
 
     # ------------------------------------------------------------ 绘画 / 编辑
     #: 批量出图数量前缀，例如「4张」「x4」「4 张」
@@ -1471,7 +1791,16 @@ class Main(star.Star):
             await self._reply(event, build_menu(self.cfg, info, is_master=self._is_master(event)))
             return
         if kind == KIND_HELP:
-            await self._reply(event, build_menu(self.cfg, info, is_master=self._is_master(event)))
+            text = build_menu(self.cfg, info, is_master=self._is_master(event))
+            if self.cfg.video_enabled():
+                command = self.cfg.video_commands()[0]
+                text += (
+                    "\n\n🎬 视频生成：%s 大草原\n"
+                    "文生视频只发文字；图生视频同时发送或引用一张图片。\n"
+                    "收到时长提示后回复 10、10s 或 10秒，发送「取消」退出。\n"
+                    "提交后后台处理并播报进度，视频就绪后发送结果。"
+                ) % command
+            await self._reply(event, text)
             return
         if kind == KIND_MODELS:
             await self._list_models(event, parsed, info)

@@ -37,7 +37,7 @@ from .models import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_gpt_image"
-DEFAULT_VERSION = "1.0.8"
+DEFAULT_VERSION = "1.0.9"
 UPDATE_BASE_URL = "http://docs.317ak.com/AstrBot/gpt-image-2.5huihua"
 UPDATE_CHANGELOG_URL = UPDATE_BASE_URL + "/CHANGELOG.txt"
 
@@ -47,6 +47,7 @@ GROUP_MODES: Tuple[str, ...] = ("all", "whitelist", "blacklist")
 COMMAND_KEYS: Tuple[str, ...] = (
     "draw_commands",
     "edit_commands",
+    "video_commands",
     "menu_commands",
     "master_commands",
 )
@@ -64,6 +65,8 @@ TEXT_KEYS: Tuple[str, ...] = (
     "start_prompt", "done_prompt", "menu_text",
     "img2prompt_model", "translate_model", "translate_supplier",
     "translate_prompt_text",
+    "video_model", "video_supplier", "video_api_mode",
+    "video_start_prompt", "video_progress_prompt", "video_done_prompt",
 )
 #: 整数范围字段：键 -> (最小值, 最大值)
 INT_RANGE_KEYS: Dict[str, Tuple[int, int]] = {
@@ -72,10 +75,16 @@ INT_RANGE_KEYS: Dict[str, Tuple[int, int]] = {
     "cooldown": (0, 3600),
     "retry_times": (0, 3),
     "batch_max": (1, 10),
+    "video_poll_interval": (2, 60),
+    "video_progress_interval": (5, 60),
+    "video_duration_timeout": (30, 600),
+    "video_timeout": (30, 3600),
+    "video_max_concurrent": (1, 8),
 }
 #: 布尔字段
 BOOL_KEYS: Tuple[str, ...] = (
     "private_enabled",
+    "video_enabled",
     "masters_use_astrbot_admin",
     "reply_reference_image",
     "size_auto_detect", "strict_trigger", "group_require_enable",
@@ -1051,6 +1060,21 @@ def _build_plan(cfg: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
                 raise _ValidationError("%s 必须是字符串" % key)
             plan[key] = value
 
+    if "video_api_mode" in plan:
+        mode = plan["video_api_mode"].strip().lower()
+        if mode not in ("openai", "legacy"):
+            raise _ValidationError("video_api_mode 必须是 openai / legacy 之一")
+        plan["video_api_mode"] = mode
+    if "video_model" in plan:
+        plan["video_model"] = plan["video_model"].strip()
+    if "video_supplier" in plan:
+        plan["video_supplier"] = plan["video_supplier"].strip()
+        supplier_names = [item.name for item in plan["suppliers"]] if "suppliers" in plan else _supplier_names(cfg)
+        if plan["video_supplier"] and plan["video_supplier"] not in supplier_names:
+            raise _ValidationError("视频供应商不存在：%s" % plan["video_supplier"])
+    if "video_commands" in plan and not plan["video_commands"]:
+        raise _ValidationError("video_commands 至少保留一条指令")
+
     _parse_new_structured(payload, plan)
 
     return plan
@@ -1581,6 +1605,7 @@ async def _api_get_config(plugin: Any) -> Any:
         for key in (
             "prompts", "gacha_styles", "flavor_lines", "menu_sections",
             "translate_prompt_text", "start_prompt", "done_prompt", "menu_text",
+            "video_start_prompt", "video_progress_prompt", "video_done_prompt",
             "master_commands", "image_sizes", "translate_model",
             "translate_supplier", "img2prompt_model",
         )
@@ -1645,7 +1670,7 @@ def _extract_changelog(text: str, version: str) -> str:
 
 async def _fetch_text(url: str) -> str:
     def fetch() -> str:
-        request_obj = UrlRequest(url, headers={"User-Agent": "astrbot-plugin-gpt-image/1.0.8"})
+        request_obj = UrlRequest(url, headers={"User-Agent": "astrbot-plugin-gpt-image/1.0.9"})
         with urlopen(request_obj, timeout=8) as response:
             return response.read().decode("utf-8-sig", errors="replace")
     return await asyncio.to_thread(fetch)

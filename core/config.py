@@ -66,7 +66,7 @@ DEFAULT_SUPPLIER_NAME = DEFAULT_SUPPLIERS[0]["name"]
 
 #: 默认菜单分组，保证新安装和旧配置升级后直接可用。
 DEFAULT_MENU_SECTIONS: list[dict[str, Any]] = [
-    {"name": "绘画与编辑", "items": ["绘画", "图片编辑", "重画", "抽卡", "预设列表", "图片转提示词"]},
+    {"name": "绘画与编辑", "items": ["绘画", "图片编辑", "生成视频", "重画", "抽卡", "预设列表", "图片转提示词"]},
     {"name": "模型与接口", "items": ["模型列表", "切换模型", "协议列表", "切换协议", "供应商列表", "切换供应商"]},
     {"name": "尺寸设置", "items": ["尺寸列表", "切换尺寸", "添加尺寸", "删除尺寸"]},
     {"name": "群与权限", "items": ["群列表", "群开关", "添加主人", "删除主人"]},
@@ -74,7 +74,7 @@ DEFAULT_MENU_SECTIONS: list[dict[str, Any]] = [
     {"name": "插件维护", "items": ["菜单列表", "设置菜单", "删除菜单", "添加预设", "删除预设", "重载配置", "重置设置"]},
 ]
 
-#: v1.0.3 及更早版本的内置分组名称，用于升级时清理旧出厂菜单。
+#: v1.0.8 及更早版本的完整出厂菜单，用于精确识别升级，不覆盖用户自定义。
 _LEGACY_MENU_SECTION_NAMES = (
     "绘画与编辑",
     "模型与接口",
@@ -164,6 +164,12 @@ DEFAULT_MENU_TEXT = (
 
 DEFAULT_DRAW_COMMANDS: list[str] = ["绘画", "画图"]
 DEFAULT_EDIT_COMMANDS: list[str] = ["图片编辑", "编辑图片"]
+DEFAULT_VIDEO_COMMANDS: list[str] = ["生成视频", "视频生成", "文生视频", "图生视频"]
+
+#: 视频使用独立消息模板，留空时采用内置文案。
+DEFAULT_VIDEO_START_PROMPT = '🎬 视频任务已提交，正在生成。\n模型：{model}\n时长：{seconds} 秒\n任务：{task_id}\n初始进度：{progress_type}{progress}%\n估算仅供参考，不代表剩余时间。'
+DEFAULT_VIDEO_PROGRESS_PROMPT = '🎬 视频生成中：{progress_type}{progress}%｜已等待 {elapsed} 秒\n状态：{status}'
+DEFAULT_VIDEO_DONE_PROMPT = '✅ 视频生成完成（{progress}%），用时 {elapsed} 秒。\n模型：{model}｜时长：{seconds} 秒'
 DEFAULT_MENU_COMMANDS: list[str] = ["绘画菜单", "菜单"]
 DEFAULT_MASTER_COMMANDS: list[str] = [
     "切换模型",
@@ -209,13 +215,28 @@ _NESTED_LAYOUT = {
     "commands": {
         "draw_commands": list(DEFAULT_DRAW_COMMANDS),
         "edit_commands": list(DEFAULT_EDIT_COMMANDS),
+        "video_commands": list(DEFAULT_VIDEO_COMMANDS),
         "menu_commands": list(DEFAULT_MENU_COMMANDS),
         "master_commands": list(DEFAULT_MASTER_COMMANDS),
         "supplier_commands": list(DEFAULT_SUPPLIER_COMMANDS),
     },
+    "video": {
+        "video_enabled": True,
+        "video_model": "",
+        "video_supplier": "",
+        "video_api_mode": "legacy",
+        "video_poll_interval": 5,
+        "video_progress_interval": 10,
+        "video_duration_timeout": 120,
+        "video_timeout": 900,
+        "video_max_concurrent": 2,
+    },
     "messages": {
         "start_prompt": DEFAULT_START_PROMPT,
         "done_prompt": DEFAULT_DONE_PROMPT,
+        "video_start_prompt": DEFAULT_VIDEO_START_PROMPT,
+        "video_progress_prompt": DEFAULT_VIDEO_PROGRESS_PROMPT,
+        "video_done_prompt": DEFAULT_VIDEO_DONE_PROMPT,
         "menu_text": DEFAULT_MENU_TEXT,
     },
     "suppliers": {
@@ -1429,6 +1450,41 @@ class PluginConfig:
         commands = _as_str_list(self._cache.get("edit_commands"))
         return commands or list(DEFAULT_EDIT_COMMANDS)
 
+    def video_commands(self) -> list[str]:
+        commands = _as_str_list(self._cache.get("video_commands"))
+        # 只迁移上一版完整默认别名，自定义指令保持原样。
+        if commands == ["生成视频", "视频生成"]:
+            return list(DEFAULT_VIDEO_COMMANDS)
+        return commands or list(DEFAULT_VIDEO_COMMANDS)
+
+    def video_enabled(self) -> bool:
+        return _as_bool(self._cache.get("video_enabled"), True)
+
+    def video_model(self) -> str:
+        return _as_text(self._cache.get("video_model"), "").strip()
+
+    def video_supplier(self) -> str:
+        return _as_text(self._cache.get("video_supplier"), "").strip()
+
+    def video_api_mode(self) -> str:
+        mode = _as_text(self._cache.get("video_api_mode"), "legacy").strip().lower()
+        return mode if mode in ("openai", "legacy") else "legacy"
+
+    def video_poll_interval(self) -> int:
+        return max(2, min(60, _as_int(self._cache.get("video_poll_interval"), 5)))
+
+    def video_progress_interval(self) -> int:
+        return max(5, min(60, _as_int(self._cache.get("video_progress_interval"), 10)))
+
+    def video_duration_timeout(self) -> int:
+        return max(30, min(600, _as_int(self._cache.get("video_duration_timeout"), 120)))
+
+    def video_timeout(self) -> int:
+        return max(30, min(3600, _as_int(self._cache.get("video_timeout"), 900)))
+
+    def video_max_concurrent(self) -> int:
+        return max(1, min(8, _as_int(self._cache.get("video_max_concurrent"), 2)))
+
     def menu_commands(self) -> list[str]:
         commands = _as_str_list(self._cache.get("menu_commands"))
         return commands or list(DEFAULT_MENU_COMMANDS)
@@ -1448,6 +1504,15 @@ class PluginConfig:
     def done_prompt(self) -> str:
         text = str(self._cache.get("done_prompt") or "").strip()
         return text or DEFAULT_DONE_PROMPT
+
+    def video_start_prompt(self) -> str:
+        return _as_text(self._cache.get("video_start_prompt"), "").strip() or DEFAULT_VIDEO_START_PROMPT
+
+    def video_progress_prompt(self) -> str:
+        return _as_text(self._cache.get("video_progress_prompt"), "").strip() or DEFAULT_VIDEO_PROGRESS_PROMPT
+
+    def video_done_prompt(self) -> str:
+        return _as_text(self._cache.get("video_done_prompt"), "").strip() or DEFAULT_VIDEO_DONE_PROMPT
 
     def menu_text(self) -> str:
         text = str(self._cache.get("menu_text") or "").strip()
@@ -2094,6 +2159,19 @@ class PluginConfig:
             ],
             "draw_commands": self.draw_commands(),
             "edit_commands": self.edit_commands(),
+            "video_commands": self.video_commands(),
+            "video_enabled": self.video_enabled(),
+            "video_model": self.video_model(),
+            "video_supplier": self.video_supplier(),
+            "video_api_mode": self.video_api_mode(),
+            "video_poll_interval": self.video_poll_interval(),
+            "video_progress_interval": self.video_progress_interval(),
+            "video_duration_timeout": self.video_duration_timeout(),
+            "video_start_prompt": self.video_start_prompt(),
+            "video_progress_prompt": self.video_progress_prompt(),
+            "video_done_prompt": self.video_done_prompt(),
+            "video_timeout": self.video_timeout(),
+            "video_max_concurrent": self.video_max_concurrent(),
             "menu_commands": self.menu_commands(),
             "master_commands": self.master_commands(),
             "start_prompt": self.start_prompt(),
@@ -2184,6 +2262,10 @@ __all__ = [
     "DEFAULT_DONE_PROMPT",
     "DEFAULT_DRAW_COMMANDS",
     "DEFAULT_EDIT_COMMANDS",
+    "DEFAULT_VIDEO_COMMANDS",
+    "DEFAULT_VIDEO_START_PROMPT",
+    "DEFAULT_VIDEO_PROGRESS_PROMPT",
+    "DEFAULT_VIDEO_DONE_PROMPT",
     "DEFAULT_MASTER_COMMANDS",
     "DEFAULT_MENU_COMMANDS",
     "DEFAULT_MENU_TEXT",

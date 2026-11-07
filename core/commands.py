@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - 兼容把 core/ 目录直接加入 sys
 
 KIND_DRAW = "draw"
 KIND_EDIT = "edit"
+KIND_VIDEO = "video"
 KIND_MENU = "menu"
 KIND_MODELS = "models"
 KIND_SWITCH_MODEL = "switch_model"
@@ -73,6 +74,7 @@ KIND_UPDATE = "update"
 ALL_KINDS: Tuple[str, ...] = (
     KIND_DRAW,
     KIND_EDIT,
+    KIND_VIDEO,
     KIND_MENU,
     KIND_MODELS,
     KIND_SWITCH_MODEL,
@@ -113,6 +115,7 @@ ALL_KINDS: Tuple[str, ...] = (
 CONTENT_KINDS: Tuple[str, ...] = (
     KIND_DRAW,
     KIND_EDIT,
+    KIND_VIDEO,
     KIND_PRESET_ADD,
     KIND_PRESET_DEL,
     KIND_MENU_SET,
@@ -167,11 +170,12 @@ class ParsedCommand:
 # 「传入的 cfg 缺方法 / 返回空」时的兜底，正常情况下由 PluginConfig 提供。
 _FALLBACK_DRAW_COMMANDS: Tuple[str, ...] = ("绘画", "画图")
 _FALLBACK_EDIT_COMMANDS: Tuple[str, ...] = ("图片编辑", "编辑图片")
+_FALLBACK_VIDEO_COMMANDS: Tuple[str, ...] = ("生成视频", "视频生成", "文生视频", "图生视频")
 _FALLBACK_MENU_COMMANDS: Tuple[str, ...] = ("绘画菜单", "菜单")
 
 # 未配置菜单分组时的出厂菜单。只引用公开指令，不包含表情或隐藏内容。
 _DEFAULT_MENU_SECTIONS: Tuple[dict, ...] = (
-    {"name": "基础创作", "items": ("绘画", "图片编辑", "重画", "使用说明", "我的ID")},
+    {"name": "基础创作", "items": ("绘画", "图片编辑", "生成视频", "文生视频", "图生视频", "重画", "使用说明", "我的ID")},
     {
         "name": "模型与供应商",
         "items": ("供应商列表", "切换供应商", "协议列表", "切换协议", "模型列表", "切换模型"),
@@ -353,6 +357,7 @@ _KIND_PRIORITY: Dict[str, int] = {
     KIND_MASTER_ADD: 2,
     KIND_MASTER_DEL: 2,
     KIND_EDIT: 3,
+    KIND_VIDEO: 3,
     KIND_DRAW: 4,
 }
 
@@ -552,6 +557,7 @@ def _command_candidates(cfg: Any) -> List[Tuple[str, str]]:
         kind = _supplier_kind_for(name, index, supplier_names)
         if kind:
             add([name], kind)
+    add(_cfg_list(cfg, "video_commands", _FALLBACK_VIDEO_COMMANDS), KIND_VIDEO)
     add(_cfg_list(cfg, "edit_commands", _FALLBACK_EDIT_COMMANDS), KIND_EDIT)
     add(_cfg_list(cfg, "draw_commands", _FALLBACK_DRAW_COMMANDS), KIND_DRAW)
 
@@ -1594,6 +1600,7 @@ def build_menu(cfg: Any, state_view: Optional[dict] = None, *, is_master: bool =
 
     draw_commands = _cfg_list(cfg, "draw_commands", _FALLBACK_DRAW_COMMANDS)
     edit_commands = _cfg_list(cfg, "edit_commands", _FALLBACK_EDIT_COMMANDS)
+    video_commands = _cfg_list(cfg, "video_commands", _FALLBACK_VIDEO_COMMANDS)
     menu_commands = _cfg_list(cfg, "menu_commands", _FALLBACK_MENU_COMMANDS)
     master_commands = _cfg_list(cfg, "master_commands", _FALLBACK_MASTER_COMMANDS)
     supplier_commands = _cfg_list(cfg, "supplier_commands", _FALLBACK_SUPPLIER_COMMANDS)
@@ -1689,6 +1696,7 @@ def build_menu(cfg: Any, state_view: Optional[dict] = None, *, is_master: bool =
         "timeout": _cfg_text(cfg, "timeout", ""),
         "draw_command": _first_or(draw_commands, "绘画"),
         "edit_command": _first_or(edit_commands, "图片编辑"),
+        "video_command": _first_or(video_commands, "生成视频"),
         "menu_command": _first_or(menu_commands, "菜单"),
         "supplier_menu": _supplier_command(0, "供应商列表"),
         "model_menu": _supplier_command(4, "模型列表"),
@@ -1701,6 +1709,7 @@ def build_menu(cfg: Any, state_view: Optional[dict] = None, *, is_master: bool =
         "master_commands": "、".join(master_commands),
         "draw_commands": "、".join(draw_commands),
         "edit_commands": "、".join(edit_commands),
+        "video_commands": "、".join(video_commands),
         "menu_commands": "、".join(menu_commands),
         "menu_sections": render_menu_sections(cfg, compact=True),
         "menu_list": _first_or(_cfg_list(cfg, "menu_commands", _FALLBACK_MENU_COMMANDS), "菜单"),
@@ -1747,6 +1756,7 @@ __all__ = [
     "KIND_DEL_SIZE",
     "KIND_DRAW",
     "KIND_EDIT",
+    "KIND_VIDEO",
     "KIND_GROUP_OFF",
     "KIND_GROUP_ON",
     "KIND_GROUPS",

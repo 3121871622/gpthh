@@ -12,7 +12,7 @@
  */
 
 const PLUGIN_TITLE = "gpt-image-2.5绘画";
-const FALLBACK_VERSION = "1.0.8";
+const FALLBACK_VERSION = "1.0.9";
 
 const THEME_STORAGE_KEY = "astrbot-gpt-image-settings-theme";
 const THEME_OPTIONS = [
@@ -109,6 +109,7 @@ const SELFHOST_PROTOCOLS = ["sdwebui", "comfyui"];
 const DEFAULT_COMMANDS = {
   draw: ["绘画", "画图"],
   edit: ["图片编辑", "编辑图片"],
+  video: ["生成视频", "视频生成", "文生视频", "图生视频"],
   menu: ["绘画菜单", "菜单"],
   master: [
     "切换模型",
@@ -141,6 +142,9 @@ const SUPPLIER_COMMAND_FIELDS = [
 const DEFAULT_SUPPLIER_COMMANDS = SUPPLIER_COMMAND_FIELDS.map((item) => item.label);
 
 const DEFAULT_PROMPTS = {
+  video_start_prompt: "🎬 视频任务已提交，正在生成。\n模型：{model}\n时长：{seconds} 秒\n任务：{task_id}\n初始进度：{progress_type}{progress}%\n估算仅供参考，不代表剩余时间。",
+  video_progress_prompt: "🎬 视频生成中：{progress_type}{progress}%｜已等待 {elapsed} 秒\n状态：{status}",
+  video_done_prompt: "✅ 视频生成完成（{progress}%），用时 {elapsed} 秒。\n模型：{model}｜时长：{seconds} 秒",
   start_prompt: `🎨 收到，正在为你{prompt_type}…
 🧠 模型：{模型}（{协议}）
 📐 尺寸：{尺寸}
@@ -191,6 +195,17 @@ const SIZE_PRESETS = [
   "2048x1152",
   "2560x1080",
   "1080x2560",
+];
+
+const VIDEO_PROMPT_VARIABLES = [
+  { name: "{prompt}", desc: "视频专用：视频描述，较长时注意平台消息长度限制" },
+  { name: "{model}", desc: "视频专用：当前视频模型" },
+  { name: "{seconds}", desc: "视频专用：用户选择的成片时长（秒）" },
+  { name: "{elapsed}", desc: "视频专用：任务已等待时间（秒）" },
+  { name: "{progress}", desc: "视频专用：百分比，取得成片前不会显示 100" },
+  { name: "{progress_type}", desc: "视频专用：实际进度或估算进度；估算不代表剩余时间" },
+  { name: "{status}", desc: "视频专用：当前任务状态" },
+  { name: "{task_id}", desc: "视频专用：网关任务 ID" },
 ];
 
 const PROMPT_VARIABLES = [
@@ -2386,6 +2401,34 @@ function renderModels() {
     ]),
   );
 
+  /* ---- 异步视频任务 ---- */
+  body.appendChild(h("hr", { class: "divider" }));
+  body.appendChild(h("div", { class: "sub-title", text: "🎬 异步视频生成" }));
+  const videoEnabled = h("input", { type: "checkbox", id: "video-enabled", checked: cfg.video_enabled !== false, onchange: markDirty });
+  const videoModel = h("input", { class: "input", id: "video-model", value: String(cfg.video_model || ""), oninput: markDirty });
+  const videoSupplierValue = String(cfg.video_supplier || "").trim();
+  const videoSupplierNames = state.suppliers.map((item) => String(item.name || "").trim()).filter(Boolean);
+  // 保留已删除供应商的当前值，保存时明确报错，避免静默切换计费来源。
+  if (videoSupplierValue && !videoSupplierNames.includes(videoSupplierValue)) videoSupplierNames.push(videoSupplierValue);
+  const videoSupplier = h("select", { class: "select", id: "video-supplier", onchange: markDirty },
+    [h("option", { value: "", text: "沿用当前会话供应商", selected: !videoSupplierValue }),
+      ...videoSupplierNames.map((name) => h("option", { value: name, text: name, selected: name === videoSupplierValue }))]);
+  const videoMode = h("select", { class: "select", id: "video-api-mode", onchange: markDirty },
+    [{ value: "legacy", label: "New API 异步视频" }, { value: "openai", label: "OpenAI 兼容视频" }].map((item) =>
+      h("option", { value: item.value, text: item.label, selected: item.value === String(cfg.video_api_mode || "legacy") })));
+  const videoNumber = (id, value, low, high) => h("input", { class: "input", id, type: "number", min: String(low), max: String(high), step: "1", value: String(value), oninput: markDirty });
+  body.appendChild(h("div", { class: "grid" }, [
+    h("div", { class: "field" }, [h("span", { class: "field-label", text: "视频生成开关" }), h("label", { class: "checkbox-row" }, [videoEnabled, h("span", { text: "启用文生视频与图生视频指令" })])]),
+    textField("视频模型", videoModel, "请填写供应商支持的视频模型；留空可保存设置，生成前会提示补充。"),
+    textField("视频供应商", videoSupplier, "复用已配置的 Base URL 和 API Key；留空沿用当前会话供应商。"),
+    textField("视频接口模式", videoMode, "按供应商实际接口选择；只提交一次任务，随后查询状态。"),
+    textField("状态查询间隔（秒）", videoNumber("video-poll-interval", cfg.video_poll_interval ?? 5, 2, 60), "2~60 秒，默认 5 秒。"),
+    textField("进度通知间隔（秒）", videoNumber("video-progress-interval", cfg.video_progress_interval ?? 10, 5, 60), "5~60 秒，默认 10 秒；控制聊天进度通知频率。"),
+    textField("等待输入时长（秒）", videoNumber("video-duration-timeout", cfg.video_duration_timeout ?? 120, 30, 600), "30~600 秒，默认 120 秒；等待回复 10、10s 或 10秒。"),
+    textField("任务等待上限（秒）", videoNumber("video-timeout", cfg.video_timeout ?? 900, 30, 3600), "30~3600 秒，默认 900 秒；超时停止本地等待。"),
+    textField("视频最大并发数", videoNumber("video-max-concurrent", cfg.video_max_concurrent ?? 2, 1, 8), "1~8，默认 2；与图片任务分别限流。"),
+  ]));
+
   /* ---- 尺寸管理 ---- */
   body.appendChild(h("hr", { class: "divider" }));
   body.appendChild(h("div", { class: "sub-title", text: "🖼 尺寸管理" }));
@@ -2556,6 +2599,7 @@ function renderCommands() {
   const fields = [
     { key: "draw_commands", label: "🖌 绘画指令", defaults: DEFAULT_COMMANDS.draw, hint: "「指令 + 内容」触发生成图片，例如：绘画广州塔宣传图" },
     { key: "edit_commands", label: "🖼 图片编辑指令", defaults: DEFAULT_COMMANDS.edit, hint: "「指令 + 内容 + 图片」触发编辑；也用于引用编辑、多图编辑与 @头像编辑" },
+    { key: "video_commands", label: "🎬 视频生成指令", defaults: DEFAULT_COMMANDS.video, hint: "先发送「文生视频 + 描述」或「图生视频 + 描述 + 一张图片」，再回复 10、10s 或 10秒；图生视频也可引用图片。" },
     { key: "menu_commands", label: "📋 菜单指令", defaults: DEFAULT_COMMANDS.menu, hint: "查看插件菜单，例如：菜单 / 绘画菜单" },
     { key: "master_commands", label: "👑 主人指令", defaults: DEFAULT_COMMANDS.master, hint: "群开关、切换供应商 / 协议 / 模型 / 尺寸、增删尺寸、增删主人、重载配置、运行统计、重置设置等仅主人可用的指令名" },
   ];
@@ -2697,6 +2741,9 @@ function renderPrompts() {
   const items = [
     { key: "start_prompt", label: "⏳ 开始绘画文案", hint: "收到请求后立即回复。可用 {prompt_type} 自动区分绘画 / 图片编辑。" },
     { key: "done_prompt", label: "✅ 完成文案", hint: "出图完成后回复，{耗时} 已保留两位小数。" },
+    { key: "video_start_prompt", label: "🎬 视频任务开始文案", hint: "任务提交后发送。默认从 1%（估算）开始；估算仅供参考，不代表剩余时间。视频使用右侧英文变量。" },
+    { key: "video_progress_prompt", label: "⏳ 视频进度文案", hint: "默认每 10 秒通知一次。保留 {progress_type} 以区分实际或估算进度；失败或超时后停止通知。" },
+    { key: "video_done_prompt", label: "✅ 视频任务完成文案", hint: "仅在取得视频结果后显示 100%。可使用 {model}、{seconds}、{elapsed}、{task_id} 等视频变量。" },
     { key: "menu_text", label: "📋 菜单文案", hint: "发送菜单指令时回复的内容，支持 {供应商} / {协议} / {群状态} 等变量。" },
   ];
 
@@ -2747,7 +2794,7 @@ function renderPrompts() {
             textareas[key].value = DEFAULT_PROMPTS[key] || "";
           });
           markDirty();
-          toast("三个文案均已恢复默认，保存后生效", "info");
+          toast("全部文案均已恢复默认，保存后生效", "info");
         },
       }),
       h("span", { class: "hint", text: "留空时插件也会自动回退到默认文案；点右侧变量会插入到当前聚焦的输入框。" }),
@@ -2755,7 +2802,7 @@ function renderPrompts() {
   );
 
   right.appendChild(h("div", { class: "sub-title", text: "🧩 可用变量" }));
-  const variables = PROMPT_VARIABLES.concat(EXTRA_PROMPT_VARIABLES);
+  const variables = PROMPT_VARIABLES.concat(EXTRA_PROMPT_VARIABLES, VIDEO_PROMPT_VARIABLES);
   const variableSearch = h("input", { class: "input", type: "search", placeholder: "搜索变量名称或说明…", "aria-label": "搜索变量" });
   right.appendChild(h("div", { class: "hint", text: "点击变量会插入到当前光标位置；未聚焦时默认插入「开始绘画文案」。" }));
   right.appendChild(variableSearch);
@@ -2798,6 +2845,14 @@ function renderPrompts() {
     extraTable.appendChild(h("div", { class: "kv-value", text: item.desc }));
   });
   right.appendChild(extraTable);
+  right.appendChild(h("div", { class: "sub-title", style: "margin-top:16px", text: "🎬 视频专用变量" }));
+  const videoTable = h("div", { class: "kv" });
+  VIDEO_PROMPT_VARIABLES.forEach((item) => {
+    videoTable.appendChild(h("div", { class: "kv-key mono", text: item.name }));
+    videoTable.appendChild(h("div", { class: "kv-value", text: item.desc }));
+  });
+  right.appendChild(videoTable);
+  right.appendChild(hint("视频变量仅用于三种视频文案；包含完整提示词时请注意平台消息长度限制。"));
 
   layout.appendChild(left);
   layout.appendChild(right);
@@ -3494,9 +3549,20 @@ function collectPayload() {
   payload.img2prompt_enabled = Boolean(($("img2prompt-enabled") || {}).checked ?? cfg.img2prompt_enabled);
   payload.img2prompt_model = String(($("img2prompt-model") || {}).value ?? cfg.img2prompt_model ?? "").trim();
 
+  /* 视频参数独立保存，不改变图片模型选择。 */
+  payload.video_enabled = Boolean(($("video-enabled") || {}).checked ?? cfg.video_enabled ?? true);
+  payload.video_model = String(($("video-model") || {}).value ?? cfg.video_model ?? "").trim();
+  payload.video_supplier = String(($("video-supplier") || {}).value ?? cfg.video_supplier ?? "").trim();
+  payload.video_api_mode = String(($("video-api-mode") || {}).value ?? cfg.video_api_mode ?? "legacy");
+  payload.video_poll_interval = Number(($("video-poll-interval") || {}).value ?? cfg.video_poll_interval ?? 5);
+  payload.video_progress_interval = Number(($("video-progress-interval") || {}).value ?? cfg.video_progress_interval ?? 10);
+  payload.video_duration_timeout = Number(($("video-duration-timeout") || {}).value ?? cfg.video_duration_timeout ?? 120);
+  payload.video_timeout = Number(($("video-timeout") || {}).value ?? cfg.video_timeout ?? 900);
+  payload.video_max_concurrent = Number(($("video-max-concurrent") || {}).value ?? cfg.video_max_concurrent ?? 2);
+
   /* 指令 */
   const editors = state.commandEditors || {};
-  ["draw_commands", "edit_commands", "menu_commands", "master_commands"].forEach((key) => {
+  ["draw_commands", "edit_commands", "video_commands", "menu_commands", "master_commands"].forEach((key) => {
     const entry = editors[key];
     if (entry && entry.editor) payload[key] = trimList(entry.editor.getValues());
   });
@@ -3506,7 +3572,7 @@ function collectPayload() {
 
   /* 文案 */
   const areas = state.promptTextareas || {};
-  ["start_prompt", "done_prompt", "menu_text"].forEach((key) => {
+  ["start_prompt", "done_prompt", "menu_text", "video_start_prompt", "video_progress_prompt", "video_done_prompt"].forEach((key) => {
     const area = areas[key];
     if (area) payload[key] = String(area.value || "");
   });
@@ -3576,6 +3642,13 @@ function validatePayload(payload) {
     if (!entry.model && SELFHOST_PROTOCOLS.indexOf(key) === -1) return "协议「" + protocolShortLabelOf(key) + "」的生成模型不能为空";
   }
 
+  /* ---- 视频任务 ---- */
+  if (!["legacy", "openai"].includes(payload.video_api_mode)) return "请选择有效的视频接口模式";
+  if (payload.video_supplier && names.indexOf(payload.video_supplier) === -1) return "视频供应商不在供应商列表中，请重新选择";
+  for (const [key, label, low, high] of [["video_poll_interval", "视频状态查询间隔", 2, 60], ["video_progress_interval", "视频进度通知间隔", 5, 60], ["video_duration_timeout", "等待输入时长", 30, 600], ["video_timeout", "视频任务等待上限", 30, 3600], ["video_max_concurrent", "视频最大并发数", 1, 8]]) {
+    if (!Number.isInteger(payload[key]) || payload[key] < low || payload[key] > high) return label + "必须是 " + low + "~" + high + " 的整数";
+  }
+
   /* ---- 超时与尺寸 ---- */
   if (!Number.isFinite(payload.timeout) || payload.timeout <= 0) return "接口超时时间必须是大于 0 的数字";
   const sizes = payload.image_sizes || [];
@@ -3589,6 +3662,7 @@ function validatePayload(payload) {
   /* ---- 指令 ---- */
   if (!(payload.draw_commands || []).length) return "绘画指令至少保留一条";
   if (!(payload.edit_commands || []).length) return "图片编辑指令至少保留一条";
+  if (!(payload.video_commands || []).length) return "视频生成指令至少保留一条";
   if (!(payload.menu_commands || []).length) return "菜单指令至少保留一条";
   if (!(payload.master_commands || []).length) return "主人指令至少保留一条";
   const supplierCommands = payload.supplier_commands || [];
@@ -3703,6 +3777,18 @@ function applyAllDefaults() {
   cfg.max_input_images = 6;
   cfg.max_concurrent = 2;
   cfg.reply_reference_image = true;
+  cfg.video_enabled = true;
+  cfg.video_model = "";
+  cfg.video_supplier = "";
+  cfg.video_api_mode = "legacy";
+  cfg.video_poll_interval = 5;
+  cfg.video_progress_interval = 10;
+  cfg.video_duration_timeout = 120;
+  cfg.video_start_prompt = DEFAULT_PROMPTS.video_start_prompt;
+  cfg.video_progress_prompt = DEFAULT_PROMPTS.video_progress_prompt;
+  cfg.video_done_prompt = DEFAULT_PROMPTS.video_done_prompt;
+  cfg.video_timeout = 900;
+  cfg.video_max_concurrent = 2;
   cfg.image_sizes = SIZE_PRESETS.filter((size) => size !== "auto").slice(0, 4);
   cfg.active_size = cfg.image_sizes[0] || "1024x1024";
   if (cfg.image_sizes.indexOf("auto") === -1) cfg.image_sizes.unshift("auto");
@@ -3731,7 +3817,7 @@ function applyAllDefaults() {
   cfg.user_blacklist = [];
   cfg.bot_overrides = {};
   cfg.menu_sections = [
-    { name: "绘画与编辑", items: ["绘画", "图片编辑", "重画", "抽卡", "预设列表", "图片转提示词"] },
+    { name: "绘画与编辑", items: ["绘画", "图片编辑", "生成视频", "重画", "抽卡", "预设列表", "图片转提示词"] },
     { name: "模型与接口", items: ["模型列表", "切换模型", "协议列表", "切换协议", "供应商列表", "切换供应商"] },
     { name: "尺寸设置", items: ["尺寸列表", "切换尺寸", "添加尺寸", "删除尺寸"] },
     { name: "群与权限", items: ["群列表", "群开关", "添加主人", "删除主人"] },
@@ -3742,10 +3828,11 @@ function applyAllDefaults() {
   /* 指令与文案 */
   cfg.draw_commands = DEFAULT_COMMANDS.draw.slice();
   cfg.edit_commands = DEFAULT_COMMANDS.edit.slice();
+  cfg.video_commands = DEFAULT_COMMANDS.video.slice();
   cfg.menu_commands = DEFAULT_COMMANDS.menu.slice();
   cfg.master_commands = DEFAULT_COMMANDS.master.slice();
   cfg.supplier_commands = DEFAULT_SUPPLIER_COMMANDS.slice();
-  ["prompts", "gacha_styles", "flavor_lines", "menu_sections", "translate_prompt_text", "translate_model", "translate_supplier", "img2prompt_model", "start_prompt", "done_prompt", "menu_text", "master_commands", "image_sizes"].forEach((key) => {
+  ["prompts", "gacha_styles", "flavor_lines", "menu_sections", "translate_prompt_text", "translate_model", "translate_supplier", "img2prompt_model", "start_prompt", "done_prompt", "menu_text", "video_start_prompt", "video_progress_prompt", "video_done_prompt", "master_commands", "image_sizes"].forEach((key) => {
     if (Object.prototype.hasOwnProperty.call(cfg.defaults || {}, key)) cfg[key] = cloneDefault(key);
   });
   cfg.group_mode = "whitelist";
@@ -4141,7 +4228,7 @@ async function loadAll(options) {
   }
 
   state.config = config;
-  for (const key of ["start_prompt", "done_prompt", "menu_text"]) {
+  for (const key of ["start_prompt", "done_prompt", "menu_text", "video_start_prompt", "video_progress_prompt", "video_done_prompt"]) {
     if (typeof (config.defaults || {})[key] === "string") DEFAULT_PROMPTS[key] = config.defaults[key];
   }
   state.status = status || {};

@@ -289,6 +289,93 @@
     "type": "int",
     "default": 600
   },
+  "video_enabled": {
+    "description": "启用视频生成",
+    "hint": "使用异步任务接口提交视频，并在后台查询结果。仍遵守群开关、黑名单和平台范围。",
+    "type": "bool",
+    "default": true
+  },
+  "video_model": {
+    "description": "视频生成模型",
+    "hint": "独立于图片模型，请填写供应商实际支持的视频模型；留空可保存其他设置，发起视频任务时会提示补充。",
+    "type": "string",
+    "default": ""
+  },
+  "video_supplier": {
+    "description": "视频生成供应商",
+    "hint": "留空沿用当前会话供应商；也可填写已配置的供应商名称。地址和 API Key 在供应商中统一维护。",
+    "type": "string",
+    "default": ""
+  },
+  "video_api_mode": {
+    "description": "视频异步接口模式",
+    "hint": "legacy：New API 异步视频接口；openai：OpenAI 兼容视频接口。按供应商实际支持的接口选择。",
+    "type": "string",
+    "default": "legacy",
+    "options": [
+      "legacy",
+      "openai"
+    ]
+  },
+  "video_poll_interval": {
+    "description": "视频状态查询间隔（秒）",
+    "hint": "2~60 秒，默认 5 秒。只查询已提交的任务，不重复提交生成请求。",
+    "type": "int",
+    "default": 5
+  },
+  "video_timeout": {
+    "description": "视频任务等待上限（秒）",
+    "hint": "30~3600 秒，默认 900 秒；超过上限停止本地等待。",
+    "type": "int",
+    "default": 900
+  },
+  "video_max_concurrent": {
+    "description": "视频任务最大并发数",
+    "hint": "1~8，默认 2；视频任务独立限流。",
+    "type": "int",
+    "default": 2
+  },
+  "video_commands": {
+    "description": "视频生成指令",
+    "hint": "每行一个，默认：生成视频 / 视频生成 / 文生视频 / 图生视频。先发送描述（图生视频附带或引用一张图片），再回复 10、10s 或 10秒指定时长。",
+    "type": "list",
+    "default": [
+      "生成视频",
+      "视频生成",
+      "文生视频",
+      "图生视频"
+    ]
+  },
+  "video_progress_interval": {
+    "description": "视频进度通知间隔（秒）",
+    "hint": "5~60 秒，默认 10 秒；区别于状态查询间隔，控制发到聊天中的进度通知频率。",
+    "type": "int",
+    "default": 10
+  },
+  "video_duration_timeout": {
+    "description": "等待输入视频时长（秒）",
+    "hint": "30~600 秒，默认 120 秒；发送文生视频或图生视频指令后，等待用户回复 10、10s 或 10秒。",
+    "type": "int",
+    "default": 120
+  },
+  "video_start_prompt": {
+    "description": "视频任务开始文案",
+    "hint": "视频独立文案，正文过长可能超过平台消息长度限制。可用变量：{prompt} {model} {seconds} {elapsed} {progress} {progress_type} {status} {task_id}。留空恢复默认。",
+    "type": "text",
+    "default": "🎬 视频任务已提交，正在生成。\n模型：{model}\n时长：{seconds} 秒\n任务：{task_id}\n初始进度：{progress_type}{progress}%\n估算仅供参考，不代表剩余时间。"
+  },
+  "video_progress_prompt": {
+    "description": "视频进度通知文案",
+    "hint": "同视频开始文案变量；{progress_type} 区分实际/估算进度，请保留。未取得视频结果时进度不会显示 100%。",
+    "type": "text",
+    "default": "🎬 视频生成中：{progress_type}{progress}%｜已等待 {elapsed} 秒\n状态：{status}"
+  },
+  "video_done_prompt": {
+    "description": "视频任务完成文案",
+    "hint": "同视频开始文案变量；仅在取得视频结果后发送。留空恢复默认。",
+    "type": "text",
+    "default": "✅ 视频生成完成（{progress}%），用时 {elapsed} 秒。\n模型：{model}｜时长：{seconds} 秒"
+  },
   "start_prompt": {
     "description": "开始绘画提示文案",
     "hint": "可用变量：{提示词} {模型} {尺寸} {通道} {协议} {超时} {用户} {用户ID} {时间} {日期} {日期时间} {绘画指令} {编辑指令} {菜单指令} {批量位置} {画面比例}",
@@ -451,6 +538,7 @@
         "items": [
           "绘画",
           "图片编辑",
+          "生成视频",
           "重画",
           "抽卡",
           "预设列表",
