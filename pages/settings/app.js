@@ -12,7 +12,7 @@
  */
 
 const PLUGIN_TITLE = "gpt-image-2.5绘画";
-const FALLBACK_VERSION = "1.0.9";
+const FALLBACK_VERSION = "1.0.10";
 
 const THEME_STORAGE_KEY = "astrbot-gpt-image-settings-theme";
 const THEME_OPTIONS = [
@@ -470,6 +470,7 @@ const state = {
   completion: null,
   modelRequestSeq: 0,
   smartModelRefreshers: [],
+  videoModelRefresh: null,
   activeSectionId: "section-overview",
   platformTypes: [],
   platformInstances: [],
@@ -2401,32 +2402,13 @@ function renderModels() {
     ]),
   );
 
-  /* ---- 异步视频任务 ---- */
-  body.appendChild(h("hr", { class: "divider" }));
-  body.appendChild(h("div", { class: "sub-title", text: "🎬 异步视频生成" }));
-  const videoEnabled = h("input", { type: "checkbox", id: "video-enabled", checked: cfg.video_enabled !== false, onchange: markDirty });
-  const videoModel = h("input", { class: "input", id: "video-model", value: String(cfg.video_model || ""), oninput: markDirty });
-  const videoSupplierValue = String(cfg.video_supplier || "").trim();
-  const videoSupplierNames = state.suppliers.map((item) => String(item.name || "").trim()).filter(Boolean);
-  // 保留已删除供应商的当前值，保存时明确报错，避免静默切换计费来源。
-  if (videoSupplierValue && !videoSupplierNames.includes(videoSupplierValue)) videoSupplierNames.push(videoSupplierValue);
-  const videoSupplier = h("select", { class: "select", id: "video-supplier", onchange: markDirty },
-    [h("option", { value: "", text: "沿用当前会话供应商", selected: !videoSupplierValue }),
-      ...videoSupplierNames.map((name) => h("option", { value: name, text: name, selected: name === videoSupplierValue }))]);
-  const videoMode = h("select", { class: "select", id: "video-api-mode", onchange: markDirty },
-    [{ value: "legacy", label: "New API 异步视频" }, { value: "openai", label: "OpenAI 兼容视频" }].map((item) =>
-      h("option", { value: item.value, text: item.label, selected: item.value === String(cfg.video_api_mode || "legacy") })));
-  const videoNumber = (id, value, low, high) => h("input", { class: "input", id, type: "number", min: String(low), max: String(high), step: "1", value: String(value), oninput: markDirty });
-  body.appendChild(h("div", { class: "grid" }, [
-    h("div", { class: "field" }, [h("span", { class: "field-label", text: "视频生成开关" }), h("label", { class: "checkbox-row" }, [videoEnabled, h("span", { text: "启用文生视频与图生视频指令" })])]),
-    textField("视频模型", videoModel, "请填写供应商支持的视频模型；留空可保存设置，生成前会提示补充。"),
-    textField("视频供应商", videoSupplier, "复用已配置的 Base URL 和 API Key；留空沿用当前会话供应商。"),
-    textField("视频接口模式", videoMode, "按供应商实际接口选择；只提交一次任务，随后查询状态。"),
-    textField("状态查询间隔（秒）", videoNumber("video-poll-interval", cfg.video_poll_interval ?? 5, 2, 60), "2~60 秒，默认 5 秒。"),
-    textField("进度通知间隔（秒）", videoNumber("video-progress-interval", cfg.video_progress_interval ?? 10, 5, 60), "5~60 秒，默认 10 秒；控制聊天进度通知频率。"),
-    textField("等待输入时长（秒）", videoNumber("video-duration-timeout", cfg.video_duration_timeout ?? 120, 30, 600), "30~600 秒，默认 120 秒；等待回复 10、10s 或 10秒。"),
-    textField("任务等待上限（秒）", videoNumber("video-timeout", cfg.video_timeout ?? 900, 30, 3600), "30~3600 秒，默认 900 秒；超时停止本地等待。"),
-    textField("视频最大并发数", videoNumber("video-max-concurrent", cfg.video_max_concurrent ?? 2, 1, 8), "1~8，默认 2；与图片任务分别限流。"),
+  body.appendChild(h("div", { class: "panel-note" }, [
+    h("strong", { text: "🎬 视频生成已独立分区" }),
+    h("a", { class: "btn ghost", href: "#section-videos", text: "前往视频生成设置", onclick: (event) => {
+      event.preventDefault();
+      scrollToSection("#section-videos");
+    } }),
+    hint("视频模型、供应商、任务时长与进度参数统一在「视频生成」中设置。"),
   ]));
 
   /* ---- 尺寸管理 ---- */
@@ -2584,6 +2566,66 @@ function renderModels() {
   ]));
 
   paintSizeChips();
+}
+
+/* ---------------------------------------------------- 视频生成 */
+
+function renderVideos() {
+  const body = $("videos-body");
+  if (!body) return;
+  clear(body);
+  state.videoModelRefresh = null;
+  const cfg = state.config || {};
+  const videoSupplierValue = String(cfg.video_supplier || "").trim();
+  const names = Array.from(new Set(state.suppliers.map((item) => String(item.name || "").trim()).filter(Boolean)));
+  if (videoSupplierValue && !names.includes(videoSupplierValue)) names.push(videoSupplierValue);
+  const supplier = h("select", {
+    class: "select", id: "video-supplier", "aria-label": "视频供应商",
+    onchange: (event) => {
+      cfg.video_supplier = event.currentTarget.value;
+      refreshSmartModelSources();
+      markDirty();
+    },
+  }, [
+    h("option", { value: "", text: "沿用当前会话供应商", selected: !videoSupplierValue }),
+    ...names.map((name) => h("option", { value: name, text: name, selected: name === videoSupplierValue })),
+  ]);
+  const picker = createSmartModelChooser({
+    id: "video-model", label: "视频模型", configKey: "video_model", cacheNamespace: "video", trackSource: false,
+    getSource: () => ({ supplier: String(cfg.video_supplier || activeSupplierName()).trim(), protocol: "openai" }),
+    hint: "请先在「供应商与协议」保存地址和密钥，再获取完整模型列表。候选不保证支持视频；按供应商说明选择，也可手动填写。此处只修改视频模型。",
+  });
+  state.videoModelRefresh = picker.refreshSource;
+  body.appendChild(textField("视频模型", picker, "视频模型默认为空；填入后保存即可使用文生视频和图生视频。"));
+  const enabled = h("input", { type: "checkbox", id: "video-enabled", checked: cfg.video_enabled !== false, onchange: markDirty });
+  const mode = h("select", { class: "select", id: "video-api-mode", "aria-label": "视频接口模式", onchange: markDirty },
+    [{ value: "legacy", label: "New API 异步视频" }, { value: "openai", label: "OpenAI 兼容视频" }].map((item) =>
+      h("option", { value: item.value, text: item.label, selected: item.value === String(cfg.video_api_mode || "legacy") })));
+  const number = (id, value, low, high, label) => h("input", { class: "input", id, type: "number", min: String(low), max: String(high), step: "1", value: String(value), "aria-label": label, oninput: markDirty });
+  body.appendChild(h("div", { class: "grid" }, [
+    h("div", { class: "field" }, [h("span", { class: "field-label", text: "视频生成开关" }), h("label", { class: "checkbox-row" }, [enabled, h("span", { text: "启用文生视频与图生视频指令" })])]),
+    textField("视频供应商", supplier, "留空沿用当前会话供应商；更换供应商后可重新获取模型列表。"),
+    textField("视频接口模式", mode, "按供应商实际接口选择；只提交一次任务，随后查询状态。"),
+    textField("状态查询间隔（秒）", number("video-poll-interval", cfg.video_poll_interval ?? 5, 2, 60, "视频状态查询间隔"), "2~60 秒，默认 5 秒。"),
+    textField("进度通知间隔（秒）", number("video-progress-interval", cfg.video_progress_interval ?? 10, 5, 60, "视频进度通知间隔"), "5~60 秒，默认 10 秒；控制聊天进度通知频率。"),
+    textField("等待输入时长（秒）", number("video-duration-timeout", cfg.video_duration_timeout ?? 120, 30, 600, "等待输入视频时长"), "30~600 秒，默认 120 秒；等待回复 10、10s 或 10秒。"),
+    textField("任务等待上限（秒）", number("video-timeout", cfg.video_timeout ?? 900, 30, 3600, "视频任务等待上限"), "30~3600 秒，默认 900 秒；超时停止本地等待。"),
+    textField("视频最大并发数", number("video-max-concurrent", cfg.video_max_concurrent ?? 2, 1, 8, "视频最大并发数"), "1~8，默认 2；与图片任务分别限流。"),
+  ]));
+  body.appendChild(h("div", { class: "panel-note" }, [
+    h("strong", { text: "视频指令与通知文案" }),
+    h("div", { class: "row tight" }, [
+      h("a", { class: "btn ghost", href: "#section-commands", text: "设置视频指令", onclick: (event) => {
+        event.preventDefault(); scrollToSection("#section-commands");
+      } }),
+      h("a", { class: "btn ghost", href: "#section-prompts", text: "设置开始、进度与完成文案", onclick: (event) => {
+        event.preventDefault(); scrollToSection("#section-prompts");
+        const area = (state.promptTextareas || {}).video_start_prompt;
+        if (area) { area.focus({ preventScroll: true }); area.scrollIntoView({ block: "center" }); }
+      } }),
+    ]),
+    hint("先发送文生视频描述，或图生视频描述并附带/引用一张图片，再回复 10、10s 或 10秒。模型实际支持的时长以供应商为准。"),
+  ]));
 }
 
 /* ---------------------------------------------------- 指令设置 */
@@ -3985,10 +4027,11 @@ function createSmartModelChooser(options) {
   let cacheKey = "";
   let requestNumber = 0;
   let candidates = [];
-  const source = () => ({
+  const source = () => typeof opts.getSource === "function" ? opts.getSource() : ({
     supplier: String((opts.purpose === "text" && cfg.translate_supplier) || activeSupplierName()).trim(),
     protocol: String(state.activeProtocol || "openai"),
   });
+  const cacheNamespace = opts.cacheNamespace || opts.purpose || "";
   const input = h("input", {
     id: opts.id,
     class: "input",
@@ -4063,7 +4106,7 @@ function createSmartModelChooser(options) {
           protocol: requestedSource.protocol,
           include_all: 1,
           refresh: 1,
-          purpose: opts.purpose,
+          ...(opts.purpose ? { purpose: opts.purpose } : {}),
         });
         if (currentRequest !== requestNumber || JSON.stringify(source()) !== requestedKey || !input.isConnected) return;
         if (!modelResult.ok) {
@@ -4075,7 +4118,7 @@ function createSmartModelChooser(options) {
         }
         const models = Array.from(new Set(modelResult.models));
         rememberModels(requestedSource.supplier, requestedSource.protocol, modelResult, "在线接口");
-        state.smartModelCache[opts.purpose + requestedKey] = models;
+        state.smartModelCache[cacheNamespace + requestedKey] = models;
         candidates = models;
         paint();
         setResult(result, "✅ 获取到 " + models.length + " 个候选模型；用途需供应商支持。", "ok");
@@ -4094,7 +4137,7 @@ function createSmartModelChooser(options) {
     datalist,
     search,
     list,
-    h("div", { class: "hint", id: opts.id + "-hint", text: "候选为供应商返回的完整列表，包含图片、文本等模型名称；不据名称判断能力，所选用途需供应商支持。修改地址或密钥后请先保存再获取。" }),
+    h("div", { class: "hint", id: opts.id + "-hint", text: opts.hint || "候选为供应商返回的完整列表，包含图片、文本等模型名称；不据名称判断能力，所选用途需供应商支持。修改地址或密钥后请先保存再获取。" }),
     result,
   ]);
   const refresh = () => {
@@ -4105,14 +4148,15 @@ function createSmartModelChooser(options) {
     cacheKey = nextKey;
     requestNumber += 1;
     setBusy(fetchButton, false);
-    candidates = state.smartModelCache[opts.purpose + cacheKey]
+    candidates = state.smartModelCache[cacheNamespace + cacheKey]
       || state.modelCache[modelCacheKey(currentSource.supplier, currentSource.protocol)]
       || [];
     search.value = "";
     setResult(result, "", "info");
     paint();
   };
-  state.smartModelRefreshers.push(refresh);
+  if (opts.trackSource !== false) state.smartModelRefreshers.push(refresh);
+  panel.refreshSource = refresh;
   refresh();
   return panel;
 }
@@ -4133,7 +4177,22 @@ function refreshSmartModelSources() {
       select.dataset.sources = signature;
     }
   }
+  const videoSelect = $("video-supplier");
+  if (videoSelect) {
+    const selected = String(cfg.video_supplier || "");
+    const names = Array.from(new Set(trimList(state.suppliers.map((item) => item.name))));
+    const signature = JSON.stringify([selected, names]);
+    if (videoSelect.dataset.sources !== signature) {
+      clear(videoSelect);
+      videoSelect.appendChild(h("option", { value: "", text: "沿用当前会话供应商" }));
+      if (selected && !names.includes(selected)) names.push(selected);
+      names.forEach((name) => videoSelect.appendChild(h("option", { value: name, text: name })));
+      videoSelect.value = selected;
+      videoSelect.dataset.sources = signature;
+    }
+  }
   state.smartModelRefreshers.forEach((refresh) => refresh());
+  if (typeof state.videoModelRefresh === "function") state.videoModelRefresh();
 }
 
 function renderSmart() {
@@ -4178,6 +4237,7 @@ function renderAll() {
   renderOverview();
   renderSuppliers();
   renderModels();
+  renderVideos();
   renderSizePreview();
   renderCommands();
   renderPrompts();
@@ -4329,7 +4389,7 @@ async function loadAll(options) {
 }
 
 function renderFallback(message) {
-  ["models-body", "commands-body", "prompts-body", "access-body", "smart-body"].forEach((id) => {
+  ["models-body", "videos-body", "commands-body", "prompts-body", "access-body", "smart-body"].forEach((id) => {
     const node = $(id);
     if (!node) return;
     clear(node);

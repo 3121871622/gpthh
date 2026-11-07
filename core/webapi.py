@@ -37,9 +37,9 @@ from .models import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_gpt_image"
-DEFAULT_VERSION = "1.0.9"
-UPDATE_BASE_URL = "http://docs.317ak.com/AstrBot/gpt-image-2.5huihua"
-UPDATE_CHANGELOG_URL = UPDATE_BASE_URL + "/CHANGELOG.txt"
+DEFAULT_VERSION = "1.0.10"
+UPDATE_BASE_URL = "https://github.com/3121871622/gpthh"
+UPDATE_CHANGELOG_URL = "https://raw.githubusercontent.com/3121871622/gpthh/main/CHANGELOG.md"
 
 #: 群聊模式取值
 GROUP_MODES: Tuple[str, ...] = ("all", "whitelist", "blacklist")
@@ -1670,7 +1670,7 @@ def _extract_changelog(text: str, version: str) -> str:
 
 async def _fetch_text(url: str) -> str:
     def fetch() -> str:
-        request_obj = UrlRequest(url, headers={"User-Agent": "astrbot-plugin-gpt-image/1.0.9"})
+        request_obj = UrlRequest(url, headers={"User-Agent": "astrbot-plugin-gpt-image/" + DEFAULT_VERSION})
         with urlopen(request_obj, timeout=8) as response:
             return response.read().decode("utf-8-sig", errors="replace")
     return await asyncio.to_thread(fetch)
@@ -1692,7 +1692,7 @@ async def _api_update_check(plugin: Any) -> Any:
             "update_available": _version_tuple(latest) > _version_tuple(current),
             "message": "发现新版本 v%s" % latest if _version_tuple(latest) > _version_tuple(current) else "当前已是最新版本（v%s）" % current,
             "changelog": entry,
-            "download_url": UPDATE_BASE_URL + "/%s.zip" % latest,
+            "download_url": UPDATE_BASE_URL + "/archive/refs/tags/v%s.zip" % latest,
             "changelog_url": UPDATE_CHANGELOG_URL,
         }})
     except Exception as exc:
