@@ -2615,13 +2615,13 @@ function renderVideos() {
   body.appendChild(textField("视频模型", picker, "视频模型默认为空；填入后保存即可使用文生视频和图生视频。"));
   const enabled = h("input", { type: "checkbox", id: "video-enabled", checked: cfg.video_enabled !== false, onchange: markDirty });
   const mode = h("select", { class: "select", id: "video-api-mode", "aria-label": "视频接口模式", onchange: markDirty },
-    [{ value: "legacy", label: "New API 异步视频" }, { value: "openai", label: "OpenAI 兼容视频" }].map((item) =>
+    [{ value: "legacy", label: "New API 旧版视频（单图）" }, { value: "openai", label: "OpenAI 兼容视频（单图）" }, { value: "images", label: "Images 数组视频（单图/多图）" }].map((item) =>
       h("option", { value: item.value, text: item.label, selected: item.value === String(cfg.video_api_mode || "legacy") })));
   const number = (id, value, low, high, label) => h("input", { class: "input", id, type: "number", min: String(low), max: String(high), step: "1", value: String(value), "aria-label": label, oninput: markDirty });
   body.appendChild(h("div", { class: "grid" }, [
     h("div", { class: "field" }, [h("span", { class: "field-label", text: "视频生成开关" }), h("label", { class: "checkbox-row" }, [enabled, h("span", { text: "启用文生视频与图生视频指令" })])]),
     textField("视频供应商", supplier, "留空沿用当前会话供应商；更换供应商后可重新获取模型列表。"),
-    textField("视频接口模式", mode, "按供应商实际接口选择；只提交一次任务，随后查询状态。"),
+    textField("视频接口模式", mode, "遇到 images 与旧版单图字段冲突时，选择「Images 数组视频（单图/多图）」；该模式使用 /v1/videos JSON，最多 10 张。只提交一次任务。"),
     textField("状态查询间隔（秒）", number("video-poll-interval", cfg.video_poll_interval ?? 5, 2, 60, "视频状态查询间隔"), "2~60 秒，默认 5 秒。"),
     textField("进度通知间隔（秒）", number("video-progress-interval", cfg.video_progress_interval ?? 10, 5, 60, "视频进度通知间隔"), "5~60 秒，默认 10 秒；控制聊天进度通知频率。"),
     textField("等待输入时长（秒）", number("video-duration-timeout", cfg.video_duration_timeout ?? 120, 30, 600, "等待输入视频时长"), "30~600 秒，默认 120 秒；等待回复 10、10s 或 10秒。"),
@@ -2640,7 +2640,7 @@ function renderVideos() {
         if (area) { area.focus({ preventScroll: true }); area.scrollIntoView({ block: "center" }); }
       } }),
     ]),
-    hint("先发送文生视频描述，或图生视频描述并附带/引用一张图片，再回复 10、10s 或 10秒。模型实际支持的时长以供应商为准。"),
+    hint("先发送文生视频描述，或图生视频描述并附带/引用图片，再回复 10、10s 或 10秒。Images 模式最多 10 张、每张 20 MiB、合计 100 MiB；其他模式单张。模型能力和时长以供应商为准。"),
   ]));
 }
 
@@ -2657,7 +2657,7 @@ function renderCommands() {
   const fields = [
     { key: "draw_commands", label: "🖌 绘画指令", defaults: DEFAULT_COMMANDS.draw, hint: "「指令 + 内容」触发生成图片，例如：绘画广州塔宣传图" },
     { key: "edit_commands", label: "🖼 图片编辑指令", defaults: DEFAULT_COMMANDS.edit, hint: "「指令 + 内容 + 图片」触发编辑；也用于引用编辑、多图编辑与 @头像编辑" },
-    { key: "video_commands", label: "🎬 视频生成指令", defaults: DEFAULT_COMMANDS.video, hint: "先发送「文生视频 + 描述」或「图生视频 + 描述 + 一张图片」，再回复 10、10s 或 10秒；图生视频也可引用图片。" },
+    { key: "video_commands", label: "🎬 视频生成指令", defaults: DEFAULT_COMMANDS.video, hint: "先发送「文生视频 + 描述」或「图生视频 + 描述 + 图片」，再回复 10、10s 或 10秒；Images 模式支持多图，也可引用含图片的消息。" },
     { key: "menu_commands", label: "📋 菜单指令", defaults: DEFAULT_COMMANDS.menu, hint: "查看插件菜单，例如：菜单 / 绘画菜单" },
     { key: "master_commands", label: "👑 主人指令", defaults: DEFAULT_COMMANDS.master, hint: "群开关、切换供应商 / 协议 / 模型 / 尺寸、增删尺寸、增删主人、重载配置、运行统计、重置设置等仅主人可用的指令名" },
   ];
@@ -3701,7 +3701,7 @@ function validatePayload(payload) {
   }
 
   /* ---- 视频任务 ---- */
-  if (!["legacy", "openai"].includes(payload.video_api_mode)) return "请选择有效的视频接口模式";
+  if (!["legacy", "openai", "images"].includes(payload.video_api_mode)) return "请选择有效的视频接口模式";
   if (payload.video_supplier && names.indexOf(payload.video_supplier) === -1) return "视频供应商不在供应商列表中，请重新选择";
   for (const [key, label, low, high] of [["video_poll_interval", "视频状态查询间隔", 2, 60], ["video_progress_interval", "视频进度通知间隔", 5, 60], ["video_duration_timeout", "等待输入时长", 30, 600], ["video_timeout", "视频任务等待上限", 30, 3600], ["video_max_concurrent", "视频最大并发数", 1, 8]]) {
     if (!Number.isInteger(payload[key]) || payload[key] < low || payload[key] > high) return label + "必须是 " + low + "~" + high + " 的整数";

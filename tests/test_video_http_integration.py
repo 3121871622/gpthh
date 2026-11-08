@@ -1,7 +1,8 @@
-"""从聊天输入到真实本机 HTTP 轮询，验证两种视频协议的完整接线。"""
+"""从聊天输入到真实本机 HTTP 轮询，验证三种视频协议及多图的完整接线。"""
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
@@ -35,12 +36,18 @@ async def local_api(handler):
         await runner.cleanup()
 
 
-@pytest.mark.parametrize("mode", ["legacy", "openai"])
-@pytest.mark.parametrize("with_image", [False, True])
-def test_two_step_chat_through_http_to_video_delivery(mode, with_image):
+@pytest.mark.parametrize("mode,image_count", [
+    ("legacy", 0), ("legacy", 1), ("openai", 0), ("openai", 1),
+    ("images", 0), ("images", 1), ("images", 2),
+])
+def test_two_step_chat_through_http_to_video_delivery(mode, image_count):
     async def scenario():
         calls, queries = [], []
-        reference = ImageInput(data=b"\x89PNG\r\n\x1a\nreference", mime="image/png")
+        references = [
+            ImageInput(data=b"\x89PNG\r\n\x1a\nreference", mime="image/png"),
+            ImageInput(data=b"\xff\xd8\xffsecond-reference", mime="image/jpeg"),
+        ][:image_count]
+        with_image = bool(references)
         endpoint = "/v1/video/generations" if mode == "legacy" else "/v1/videos"
 
         async def handler(request):
@@ -56,14 +63,23 @@ def test_two_step_chat_through_http_to_video_delivery(mode, with_image):
                 calls.append(payload)
                 assert payload["model"] == "test-video-model"
                 assert payload["prompt"] == "大草原"
-                assert payload["duration" if mode == "legacy" else "seconds"] == (10 if mode == "legacy" else "10")
+                assert payload["seconds" if mode == "openai" else "duration"] == ("10" if mode == "openai" else 10)
+                if "images" in payload and any(k in payload for k in ("image", "image_url", "reference_image", "input_reference")):
+                    return web.json_response({"error": {"message": "images 不能与旧版单图字段同时使用"}}, status=400)
                 if with_image:
                     if mode == "legacy":
                         assert payload["image"].startswith("data:image/png;base64,")
+                    elif mode == "openai":
+                        assert payload["input_reference"] == references[0].data
                     else:
-                        assert payload["input_reference"] == reference.data
+                        assert request.content_type == "application/json"
+                        assert payload["images"] == [
+                            "data:%s;base64,%s" % (ref.mime, base64.b64encode(ref.data).decode("ascii"))
+                            for ref in references
+                        ]
+                        assert not any(k in payload for k in ("image", "image_url", "reference_image", "input_reference"))
                 else:
-                    assert not any(k in payload for k in ("image", "input_reference"))
+                    assert not any(k in payload for k in ("image", "images", "input_reference"))
                 return web.json_response({"task_id": "integration-task", "status": "queued"})
             assert request.method == "GET"
             assert request.path == endpoint + "/integration-task"
@@ -76,7 +92,7 @@ def test_two_step_chat_through_http_to_video_delivery(mode, with_image):
                 return web.json_response({"task_id": "integration-task", "status": "in_progress", "progress": 100})
             return web.json_response({"task_id": "integration-task", "status": "completed", "url": "https://example.invalid/ready.mp4"})
 
-        async with local_api(handler) as base, _plugin(base, mode, with_image, reference) as (plugin, namespace):
+        async with local_api(handler) as base, _plugin(base, mode, references) as (plugin, namespace):
             first = FakeEvent(message=("图生视频" if with_image else "文生视频") + " 大草原")
             await plugin._handle(first)
             assert not calls
@@ -111,7 +127,7 @@ def test_two_step_chat_through_http_to_video_delivery(mode, with_image):
 
 
 @asynccontextmanager
-async def _plugin(base, mode, with_image, reference):
+async def _plugin(base, mode, references):
     harness, namespace = load_main_methods()
     plugin = harness()
     plugin.cfg = types.SimpleNamespace(
@@ -147,7 +163,7 @@ async def _plugin(base, mode, with_image, reference):
     plugin._reply = reply
     namespace.update(VideoClient=VideoClient, VideoError=VideoError,
         extract_image_urls=AsyncMock(side_effect=lambda text: (text, [])),
-        collect_input_images=AsyncMock(return_value=[reference] if with_image else []))
+        collect_input_images=AsyncMock(return_value=references))
     components = types.ModuleType("astrbot.api.message_components")
     components.Video = types.SimpleNamespace(fromURL=lambda url: ("video", url))
     with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, {"astrbot.api.message_components": components}):

@@ -569,3 +569,143 @@ def test_nested_upstream_timeout_reason_is_preserved():
     }})
     assert task.status == "failed"
     assert "任务总等待时限已到" in task.error
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 10])
+def test_images_mode_posts_exclusive_ordered_array(count):
+    async def scenario():
+        calls = []
+        references = [ImageInput(data=("image-%s" % i).encode(),
+                                 mime=("image/png", "image/jpeg", "image/webp")[i % 3])
+                      for i in range(count)]
+        forbidden = {"image", "image_url", "reference_image", "input_reference", "seconds"}
+
+        async def handler(request):
+            assert request.method == "POST" and request.path == "/v1/videos"
+            assert request.content_type == "application/json"
+            payload = await request.json()
+            calls.append(payload)
+            if forbidden.intersection(payload):
+                return web.json_response({"error": {"message": "images 不能与旧版单图字段同时使用"}}, status=400)
+            expected = {"model": "test-video-model", "prompt": "animate these references", "duration": 10}
+            if references:
+                expected["images"] = ["data:%s;base64,%s" % (
+                    image.mime, base64.b64encode(image.data).decode("ascii")) for image in references]
+            assert payload == expected
+            return web.json_response({"id": "images-task", "status": "queued"})
+
+        async with server(handler) as base:
+            async with VideoClient(base, "test-only-key", api_mode="images") as client:
+                task = await client.submit("animate these references", "test-video-model", seconds=10, images=references)
+        assert task.id == "images-task"
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bad,message", [
+    (None, "第 2 张"), (ImageInput(data=b""), "第 2 张"),
+    (ImageInput(data=b"gif", mime="image/gif"), "JPEG"),
+])
+def test_images_mode_validates_every_reference_before_http(bad, message):
+    async def scenario():
+        async with VideoClient("http://127.0.0.1", "test-only-key", api_mode="images") as client:
+            with pytest.raises(VideoError, match=message):
+                await client.submit("test", "test-video-model", seconds=5,
+                                    images=[ImageInput(data=b"good"), bad])
+    asyncio.run(scenario())
+
+
+def test_images_mode_rejects_too_many_references_before_http():
+    async def scenario():
+        async with VideoClient("http://127.0.0.1", "test-only-key", api_mode="images") as client:
+            with pytest.raises(VideoError, match="10"):
+                await client.submit("test", "test-video-model", seconds=5,
+                                    images=[ImageInput(data=b"image")] * 11)
+    asyncio.run(scenario())
+
+
+def test_images_mode_checks_second_image_size(monkeypatch):
+    monkeypatch.setattr(videos, "MAX_REFERENCE_BYTES", 16)
+    async def scenario():
+        async with VideoClient("http://127.0.0.1", "test-only-key", api_mode="images") as client:
+            with pytest.raises(VideoError, match="第 2 张"):
+                await client.submit("test", "test-video-model", seconds=5,
+                                    images=[ImageInput(data=b"ok"), ImageInput(data=b"x" * 17)])
+    asyncio.run(scenario())
+
+
+def test_images_mode_checks_total_size(monkeypatch):
+    monkeypatch.setattr(videos, "MAX_REFERENCE_TOTAL_BYTES", 10, raising=False)
+    async def scenario():
+        async with VideoClient("http://127.0.0.1", "test-only-key", api_mode="images") as client:
+            with pytest.raises(VideoError, match="合计"):
+                await client.submit("test", "test-video-model", seconds=5,
+                                    images=[ImageInput(data=b"first!"), ImageInput(data=b"second")])
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [400, 429, 500])
+def test_images_mode_http_error_does_not_resubmit(status):
+    async def scenario():
+        calls = []
+        async def handler(request):
+            calls.append(request.method)
+            return web.json_response({"error": {"message": "fixture submission refused"}}, status=status)
+        async with server(handler) as base:
+            async with VideoClient(base, "test-only-key", api_mode="images") as client:
+                with pytest.raises(VideoError, match="HTTP %s" % status):
+                    await client.submit("test", "test-video-model", seconds=5,
+                                        images=[ImageInput(data=b"one"), ImageInput(data=b"two")])
+        assert calls == ["POST"]
+    asyncio.run(scenario())
+
+
+def test_images_mode_poll_and_download_preserve_paths_and_auth(tmp_path):
+    async def scenario():
+        calls = []
+        async def handler(request):
+            calls.append((request.method, request.path, request.headers.get("Authorization")))
+            if request.method == "POST":
+                return web.json_response({"id": "images-task", "status": "queued"})
+            if request.path == "/v1/videos/images-task":
+                return web.json_response({"id": "images-task", "status": "completed", "url": base + "/ready.mp4"})
+            assert request.path == "/ready.mp4"
+            return web.Response(body=b"fixture-video", content_type="video/mp4")
+        async with server(handler) as base:
+            async with VideoClient(base, "test-only-key", api_mode="images", poll_interval=0.01) as client:
+                task = await client.submit("test", "test-video-model", seconds=5, images=[ImageInput(data=b"reference")])
+                task = await client.wait(task)
+                downloaded = await client.download(task, tmp_path)
+        assert downloaded.read_bytes() == b"fixture-video"
+        assert calls == [("POST", "/v1/videos", "Bearer test-only-key"),
+                         ("GET", "/v1/videos/images-task", "Bearer test-only-key"),
+                         ("GET", "/ready.mp4", None)]
+    asyncio.run(scenario())
+
+
+def test_images_mode_completion_without_url_is_explicit_failure(tmp_path):
+    async def scenario():
+        async with VideoClient("http://127.0.0.1", "test-only-key", api_mode="images") as client:
+            completed = VideoTask("images-task", "completed")
+            with pytest.raises(VideoError, match="未返回有效视频地址"):
+                await client.wait(completed)
+            with pytest.raises(VideoError, match="没有下载地址"):
+                await client.download(completed, tmp_path)
+    asyncio.run(scenario())
+
+
+def test_reference_field_conflict_explains_images_mode_without_retry():
+    async def scenario():
+        calls = []
+        async def handler(request):
+            calls.append(request.method)
+            payload = await request.json()
+            assert "image" in payload and "images" not in payload
+            return web.json_response({"error": {"message": "images 不能与旧版单图字段同时使用"}}, status=400)
+        async with server(handler) as base:
+            async with VideoClient(base, "test-only-key", api_mode="legacy") as client:
+                with pytest.raises(VideoError, match="接口模式.*images"):
+                    await client.submit("test", "test-video-model", seconds=5, images=[ImageInput(data=b"reference")])
+        assert calls == ["POST"]
+    asyncio.run(scenario())

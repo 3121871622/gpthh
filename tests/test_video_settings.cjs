@@ -166,6 +166,7 @@ for (const [key, value] of invalid) {
   assert.notEqual(api.validatePayload({ ...payload, [key]: value }), '', key);
 }
 assert.equal(api.validatePayload({ ...payload, video_api_mode: 'openai' }), '');
+assert.equal(api.validatePayload({ ...payload, video_api_mode: 'images' }), '');
 assert.equal(api.validatePayload({ ...payload, video_enabled: true, video_model: '' }), '');
 api.state.promptTextareas.video_progress_prompt.value = '自定义 {progress_type}{progress}%';
 assert.equal(api.collectPayload().video_progress_prompt, '自定义 {progress_type}{progress}%');
@@ -206,7 +207,7 @@ function textOf(node) { return (node.textContent || '') + node.children.map(text
   assert.match(html, /id="section-videos"/);
   assert.match(html, /id="videos-body"/);
   assert.match(html, /href="\.\/style\.css\?v=1\.0\.10"/);
-  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=supplier-models-1"/);
+  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=video-images-1"/);
   assert.match(source, /FALLBACK_VERSION = "1\.0\.10"/);
 
   api.state.config.video_supplier = '';

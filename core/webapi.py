@@ -1069,8 +1069,8 @@ def _build_plan(cfg: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if "video_api_mode" in plan:
         mode = plan["video_api_mode"].strip().lower()
-        if mode not in ("openai", "legacy"):
-            raise _ValidationError("video_api_mode 必须是 openai / legacy 之一")
+        if mode not in ("openai", "legacy", "images"):
+            raise _ValidationError("video_api_mode 必须是 openai / legacy / images 之一")
         plan["video_api_mode"] = mode
     if "video_model" in plan:
         plan["video_model"] = plan["video_model"].strip()

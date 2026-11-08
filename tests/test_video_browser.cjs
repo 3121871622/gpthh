@@ -124,6 +124,7 @@ const server = http.createServer(async(req,res) => {
       assert.equal(await page.locator('#'+id).isVisible(),true,id+' 必须可见');
     }
     await page.locator('#video-supplier').selectOption('Video provider');
+    await page.locator('#video-api-mode').selectOption('images');
     await page.locator('#video-model-fetch').click();
     await page.locator('#video-model-search').waitFor({state:'visible'});
     assert.deepEqual(await chips(page.getByRole('group',{name:'视频模型候选'})),catalogs.get('Video provider'));
@@ -137,6 +138,7 @@ const server = http.createServer(async(req,res) => {
     await page.locator('#save-btn').click();
     await page.waitForFunction(()=>document.querySelector('#ok-banner-text').textContent.includes('已保存'));
     assert.equal(persisted.at(-1).video_supplier,'Video provider');
+    assert.equal(persisted.at(-1).video_api_mode,'images');
     assert.equal(persisted.at(-1).video_model,'fixture-video-model');
     assert.equal(persisted.at(-1).video_progress_interval,15);
     assert.equal(persisted.at(-1).video_duration_timeout,180);
@@ -146,6 +148,7 @@ const server = http.createServer(async(req,res) => {
     await page.locator('#video-model').waitFor({state:'attached'});
     assert.equal(await page.locator('#video-model').inputValue(),'fixture-video-model');
     assert.equal(await page.locator('#video-supplier').inputValue(),'Video provider');
+    assert.equal(await page.locator('#video-api-mode').inputValue(),'images');
     // 模型列表之外的合法型号也应允许手工填写并保存。
     await page.locator('#video-model').fill('manual-video-id');
     await page.locator('#save-btn').click();

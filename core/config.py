@@ -1468,7 +1468,7 @@ class PluginConfig:
 
     def video_api_mode(self) -> str:
         mode = _as_text(self._cache.get("video_api_mode"), "legacy").strip().lower()
-        return mode if mode in ("openai", "legacy") else "legacy"
+        return mode if mode in ("openai", "legacy", "images") else "legacy"
 
     def video_poll_interval(self) -> int:
         return max(2, min(60, _as_int(self._cache.get("video_poll_interval"), 5)))

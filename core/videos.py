@@ -20,6 +20,8 @@ from .models import ImageInput
 MAX_JSON_BYTES = 1024 * 1024
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 10
+MAX_REFERENCE_TOTAL_BYTES = 100 * 1024 * 1024
 _REFERENCE_EXTENSIONS = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 _STATUSES = {
     "queued": "queued", "pending": "queued", "submitted": "queued",
@@ -171,8 +173,8 @@ class VideoClient:
             raise VideoError("供应商地址应为 API 根地址，不应包含查询参数或片段。")
         if not api_key or not api_key.strip():
             raise VideoError("请先在供应商配置中填写 API Key。")
-        if api_mode not in ("legacy", "openai"):
-            raise VideoError("视频接口模式必须为 legacy 或 openai。")
+        if api_mode not in ("legacy", "openai", "images"):
+            raise VideoError("视频接口模式必须为 legacy、openai 或 images。")
         path = parts.path.rstrip("/")
         if not re.search(r"/v\d+(?:beta\d*)?$", path):
             path += "/v1"
@@ -234,7 +236,11 @@ class VideoClient:
                     error = (data.get("error") or data.get("message") or "请求失败") if isinstance(data, dict) else "请求失败"
                     if isinstance(error, dict):
                         error = error.get("message") or error.get("code") or "请求失败"
-                    raise VideoError("视频接口 HTTP %s：%s" % (response.status, redact_error(error, self.api_key)))
+                    message = redact_error(error, self.api_key)
+                    if (method == "POST" and response.status == 400 and self.api_mode != "images"
+                            and "images" in message and "旧版单图" in message):
+                        message += "；请将视频接口模式改为 images（JSON 多图）后手动重试，本次未自动重发。"
+                    raise VideoError("视频接口 HTTP %s：%s" % (response.status, message))
                 return data
         except (aiohttp.ClientError, asyncio.TimeoutError):
             if method == "GET":
@@ -252,20 +258,36 @@ class VideoClient:
             raise VideoError("视频模型名称不能为空。")
         if isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 120:
             raise VideoError("视频时长必须为 1 到 120 之间的整数秒；具体可用时长以模型为准。")
-        if len(images) > 1:
-            raise VideoError("图生视频目前仅支持一张参考图片，请移除多余图片后重试。")
-        image = images[0] if images else None
-        mime = ""
-        if image is not None:
-            if not isinstance(image, ImageInput) or not isinstance(image.data, (bytes, bytearray)) or not image.data:
-                raise VideoError("视频参考图片为空或格式无效，请重新发送图片。")
-            mime = image.mime.lower().strip()
+        if self.api_mode == "images":
+            if len(images) > MAX_REFERENCE_IMAGES:
+                raise VideoError("JSON 多图视频最多支持 %s 张参考图片。" % MAX_REFERENCE_IMAGES)
+        elif len(images) > 1:
+            raise VideoError("当前视频接口模式仅支持一张参考图片；多图请切换 images（JSON 多图）模式。")
+        references: list[tuple[ImageInput, str]] = []
+        total_bytes = 0
+        for index, reference in enumerate(images, 1):
+            if (not isinstance(reference, ImageInput)
+                    or not isinstance(reference.data, (bytes, bytearray)) or not reference.data):
+                raise VideoError("第 %s 张视频参考图片为空或格式无效，请重新发送图片。" % index)
+            mime = str(reference.mime or "").lower().strip()
             if mime not in _REFERENCE_EXTENSIONS:
-                raise VideoError("视频参考图片仅支持 JPEG、PNG 或 WebP 格式。")
-            if image.size > MAX_REFERENCE_BYTES:
-                raise VideoError("视频参考图片超过 20 MiB 上限。")
+                raise VideoError("第 %s 张视频参考图片仅支持 JPEG、PNG 或 WebP 格式。" % index)
+            if reference.size > MAX_REFERENCE_BYTES:
+                raise VideoError("第 %s 张视频参考图片超过 20 MiB 上限。" % index)
+            total_bytes += reference.size
+            if total_bytes > MAX_REFERENCE_TOTAL_BYTES:
+                raise VideoError("视频参考图片合计超过 100 MiB 上限。")
+            references.append((reference, mime))
+        image, mime = references[0] if references else (None, "")
         payload = {"model": model.strip(), "prompt": prompt.strip()}
-        if self.api_mode == "legacy":
+        if self.api_mode == "images":
+            # 数组协议只发送 images，单图也用一元素数组，避免与旧字段冲突。
+            payload["duration"] = seconds
+            if references:
+                payload["images"] = ["data:%s;base64,%s" % (
+                    mime, base64.b64encode(reference.data).decode("ascii"))
+                    for reference, mime in references]
+        elif self.api_mode == "legacy":
             # New API v1.0.0-rc.48 dto/video.go 的字段为 image（单数）及 duration。
             payload["duration"] = seconds
             payload["response_format"] = "url"
@@ -302,7 +324,7 @@ class VideoClient:
         await notify(task)
         while True:
             if task.status == "completed":
-                if not task.url and self.api_mode == "legacy":
+                if not task.url and self.api_mode in ("legacy", "images"):
                     raise VideoError("视频任务 %s 已完成，但未返回有效视频地址。" % task.id)
                 return task
             if task.status == "cancelled":

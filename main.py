@@ -92,7 +92,10 @@ from .core.presets import (
 from .core.state import SessionState
 from .core.stats import PluginStats
 from .core.webapi import register_web_apis
-from .core.videos import VideoClient, VideoError
+from .core.videos import (
+    MAX_REFERENCE_BYTES, MAX_REFERENCE_IMAGES, MAX_REFERENCE_TOTAL_BYTES,
+    VideoClient, VideoError,
+)
 from .core.video_progress import (
     VIDEO_CANCEL_WORDS, VideoImageConfig, VideoInput, VideoProgress,
     is_video_duration_reply, parse_video_seconds,
@@ -1045,7 +1048,7 @@ class Main(star.Star):
         return is_video_duration_reply(_clean_prompt(text))
 
     async def _video(self, event: AstrMessageEvent, parsed: ParsedCommand) -> None:
-        """先收集描述与单张参考图，等待同一用户回复时长后才提交。"""
+        """先收集描述与参考图，按接口模式校验，等待同一用户回复时长后才提交。"""
         if self._video_closing:
             await self._reply(event, "插件正在重载，请稍后再生成视频。")
             return
@@ -1057,7 +1060,7 @@ class Main(star.Star):
             return
         prompt = _clean_prompt(parsed.arg)
         if not prompt:
-            await self._reply(event, "请补上视频内容，例如：文生视频 大草原；图生视频请同时发送或引用一张图片。")
+            await self._reply(event, "请补上视频内容，例如：文生视频 大草原；图生视频请同时发送或引用参考图片。")
             return
         if len(prompt) > 8000:
             await self._reply(event, "视频提示词最多 8000 个字符，请缩短后重试。")
@@ -1097,29 +1100,47 @@ class Main(star.Star):
         if self._video_inputs.get(key) is not pending or self._video_closing:
             return
         reason = ""
-        if len(images) > 1:
-            reason = "图生视频一次只支持一张参考图，请只发送或引用一张图片。"
-        elif images and len(getattr(images[0], "data", b"")) > 20 * 1024 * 1024:
-            reason = "视频参考图超过 20 MiB，请压缩后重新发送。"
-        elif parsed.command == "图生视频" and not images:
-            reason = "图生视频需要一张参考图，请在同一消息发送图片，或引用图片后发送「图生视频 + 内容」。"
-        elif links and not images:
-            reason = "未能读取提示词中的参考图链接，请重新发送一张可读取的图片。"
-        elif parsed.command == "文生视频" and images:
-            reason = "已检测到参考图，请改用「图生视频 + 内容」；文生视频请只发送文字。"
-        elif not prompt:
-            reason = "请补上画面和运动描述，例如：图生视频 镜头缓慢推进。"
+        images_mode = self.cfg.video_api_mode() == "images"
+        max_images = MAX_REFERENCE_IMAGES if images_mode else 1
+        if len(images) > max_images:
+            if images_mode:
+                reason = "图生视频一次最多 %d 张参考图，请移除多余图片。" % MAX_REFERENCE_IMAGES
+            else:
+                reason = "当前接口模式一次只支持一张参考图；如供应商支持多图，请在视频设置中选择 images 数组模式。"
+        else:
+            total_bytes = 0
+            for index, image in enumerate(images, 1):
+                data = getattr(image, "data", None)
+                if not isinstance(data, (bytes, bytearray)) or not data:
+                    reason = "第 %d 张视频参考图为空或无效，请重新发送。" % index
+                    break
+                if len(data) > MAX_REFERENCE_BYTES:
+                    reason = "第 %d 张视频参考图超过 20 MiB，请压缩后重新发送。" % index
+                    break
+                total_bytes += len(data)
+            if not reason and total_bytes > MAX_REFERENCE_TOTAL_BYTES:
+                reason = "视频参考图合计超过 100 MiB，请压缩或减少图片。"
+        if not reason:
+            if parsed.command == "图生视频" and not images:
+                reason = "图生视频需要一张或多张参考图，请在同一消息发送图片，或引用图片后发送「图生视频 + 内容」。"
+            elif links and not images:
+                reason = "未能读取提示词中的参考图链接，请重新发送可读取的图片。"
+            elif parsed.command == "文生视频" and images:
+                reason = "已检测到参考图，请改用「图生视频 + 内容」；文生视频请只发送文字。"
+            elif not prompt:
+                reason = "请补上画面和运动描述，例如：图生视频 镜头缓慢推进。"
         if reason:
             self._discard_video_input(key, pending)
             await self._reply(event, reason)
             return
         pending.prompt, pending.images, pending.ready = prompt, tuple(images), True
         mode = "图生视频" if images else "文生视频"
+        image_note = "（%d 张参考图）" % len(images) if images else ""
         await self._reply(
             event,
-            "🎬 已收到%s描述，请在 %d 秒内回复视频时长（1–120 秒）。\n"
+            "🎬 已收到%s描述%s，请在 %d 秒内回复视频时长（1–120 秒）。\n"
             "例如：10、10s 或 10秒。发送「取消」退出；回复时长后才会提交任务。"
-            % (mode, timeout),
+            % (mode, image_note, timeout),
         )
 
     async def _video_duration_reply(self, event: AstrMessageEvent, text: str) -> None:
@@ -1796,7 +1817,7 @@ class Main(star.Star):
                 command = self.cfg.video_commands()[0]
                 text += (
                     "\n\n🎬 视频生成：%s 大草原\n"
-                    "文生视频只发文字；图生视频同时发送或引用一张图片。\n"
+                    "文生视频只发文字；图生视频同时发送或引用参考图片，images 数组模式支持多图。\n"
                     "收到时长提示后回复 10、10s 或 10秒，发送「取消」退出。\n"
                     "提交后后台处理并播报进度，视频就绪后发送结果。"
                 ) % command

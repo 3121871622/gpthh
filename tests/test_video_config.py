@@ -153,6 +153,21 @@ class VideoConfigTests(unittest.TestCase):
         self.assertEqual(PluginConfig({"video_api_mode": "unknown"}).video_api_mode(), "legacy")
         self.assertEqual(PluginConfig({"video_api_mode": " OpenAI "}).video_api_mode(), "openai")
 
+    def test_images_mode_survives_webapi_save_reload_and_public_config(self):
+        raw = {"video_api_mode": "legacy", "quality": "high"}
+        cfg = PluginConfig(raw)
+        image_model = cfg.model_for("openai")
+        plan = WEBAPI._build_plan(cfg, {"video_api_mode": " Images "})
+        WEBAPI._apply_plan(cfg, plan)
+        cfg.reload()
+        self.assertEqual(cfg.video_api_mode(), "images")
+        self.assertEqual(cfg.to_public_dict()["video_api_mode"], "images")
+        self.assertEqual(cfg.quality(), "high")
+        self.assertEqual(cfg.model_for("openai"), image_model)
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        self.assertIn("images", schema["video_api_mode"]["options"])
+        self.assertEqual(schema["video_api_mode"]["default"], "legacy")
+
     def test_blank_video_model_does_not_block_other_settings(self):
         raw = {"quality": "low"}
         cfg = PluginConfig(raw)

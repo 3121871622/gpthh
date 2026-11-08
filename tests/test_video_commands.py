@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core.commands import KIND_DRAW, KIND_EDIT, KIND_VIDEO, ParsedCommand, parse_command
 from core.stats import PluginStats
+from core.videos import MAX_REFERENCE_BYTES, MAX_REFERENCE_IMAGES, MAX_REFERENCE_TOTAL_BYTES
 from core.video_progress import (
     VIDEO_CANCEL_WORDS, VideoImageConfig, VideoInput, VideoProgress,
     is_video_duration_reply, parse_video_seconds,
@@ -49,6 +50,8 @@ def load_main_methods():
     namespace = dict(
         asyncio=asyncio, time=time, uuid=uuid, tempfile=tempfile, re=re,
         logger=logging.getLogger("test-video"), VideoError=FakeVideoError,
+        MAX_REFERENCE_BYTES=MAX_REFERENCE_BYTES, MAX_REFERENCE_IMAGES=MAX_REFERENCE_IMAGES,
+        MAX_REFERENCE_TOTAL_BYTES=MAX_REFERENCE_TOTAL_BYTES,
         _text_of=lambda value: "" if value is None else str(value),
         _channel_ready=lambda channel: (bool(channel and channel.base_url), "未配置供应商"),
         _COOLDOWN_HINT="冷却 {seconds} 秒", _SCOPE_EXEMPT_KINDS=frozenset(),
@@ -446,6 +449,77 @@ class VideoLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.plugin._maybe_translate.await_args.args[1:], ("镜头 推进", True))
         wrapper = MAIN_GLOBALS["collect_input_images"].await_args.args[1]
         self.assertEqual(wrapper.max_input_images(), 0)
+
+    async def test_images_mode_preserves_two_references_until_single_submit(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        references = [types.SimpleNamespace(data=b"first"), types.SimpleNamespace(data=b"second")]
+        MAIN_GLOBALS["collect_input_images"].return_value = references
+        await self.begin(parsed=ParsedCommand(KIND_VIDEO, "从第一张平滑过渡到第二张", command="图生视频"))
+        self.assertIn("2 张参考图", self.plugin._reply.await_args.args[1])
+        self.assertFalse(FakeClient.instances)
+        self.assertEqual(self.plugin._video_inputs[self.plugin._video_key(self.event)].images, tuple(references))
+        await self.confirm("10s")
+        await self.finish()
+        self.assertEqual(len(FakeClient.instances), 1)
+        self.assertEqual(FakeClient.instances[0].images, tuple(references))
+        self.assertEqual(FakeClient.instances[0].submits, 1)
+        self.assertEqual(FakeClient.instances[0].kwargs["api_mode"], "images")
+
+    async def test_images_mode_allows_ten_references_without_truncating(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        references = [types.SimpleNamespace(data=bytes([i + 1])) for i in range(10)]
+        MAIN_GLOBALS["collect_input_images"].return_value = references
+        await self.begin(parsed=ParsedCommand(KIND_VIDEO, "保持素材顺序", command="图生视频"))
+        self.assertIn("10 张参考图", self.plugin._reply.await_args.args[1])
+        await self.confirm()
+        await self.finish()
+        self.assertEqual(FakeClient.instances[0].images, tuple(references))
+
+    async def test_images_mode_rejects_eleven_references_before_waiting(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        MAIN_GLOBALS["collect_input_images"].return_value = [types.SimpleNamespace(data=b"ref")] * 11
+        await self.begin(parsed=ParsedCommand(KIND_VIDEO, "镜头推进", command="图生视频"))
+        self.assertIn("最多 10 张", self.plugin._reply.await_args.args[1])
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(FakeClient.instances)
+
+    async def test_old_modes_multiple_references_offer_explicit_images_mode(self):
+        for mode in ("legacy", "openai"):
+            with self.subTest(mode=mode):
+                self.plugin.cfg.video_api_mode = lambda: mode
+                MAIN_GLOBALS["collect_input_images"].return_value = [types.SimpleNamespace(data=b"a"), types.SimpleNamespace(data=b"b")]
+                await self.begin(parsed=ParsedCommand(KIND_VIDEO, "镜头推进", command="图生视频"))
+                self.assertIn("images", self.plugin._reply.await_args.args[1])
+                self.assertFalse(self.plugin._video_inputs)
+                self.assertFalse(FakeClient.instances)
+
+    async def test_images_mode_checks_second_reference_size(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        MAIN_GLOBALS["collect_input_images"].return_value = [types.SimpleNamespace(data=b"a"), types.SimpleNamespace(data=b"12345")]
+        with patch.dict(MAIN_GLOBALS, {"MAX_REFERENCE_BYTES": 4}):
+            await self.begin(parsed=ParsedCommand(KIND_VIDEO, "镜头推进", command="图生视频"))
+        self.assertIn("第 2 张", self.plugin._reply.await_args.args[1])
+        self.assertIn("超过", self.plugin._reply.await_args.args[1])
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(FakeClient.instances)
+
+    async def test_images_mode_checks_total_reference_size(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        MAIN_GLOBALS["collect_input_images"].return_value = [types.SimpleNamespace(data=b"1234"), types.SimpleNamespace(data=b"5678")]
+        with patch.dict(MAIN_GLOBALS, {"MAX_REFERENCE_BYTES": 4, "MAX_REFERENCE_TOTAL_BYTES": 7}):
+            await self.begin(parsed=ParsedCommand(KIND_VIDEO, "镜头推进", command="图生视频"))
+        self.assertIn("合计", self.plugin._reply.await_args.args[1])
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(FakeClient.instances)
+
+    async def test_images_mode_rejects_empty_second_reference(self):
+        self.plugin.cfg.video_api_mode = lambda: "images"
+        MAIN_GLOBALS["collect_input_images"].return_value = [types.SimpleNamespace(data=b"a"), types.SimpleNamespace(data=b"")]
+        await self.begin(parsed=ParsedCommand(KIND_VIDEO, "镜头推进", command="图生视频"))
+        self.assertIn("第 2 张", self.plugin._reply.await_args.args[1])
+        self.assertIn("无效", self.plugin._reply.await_args.args[1])
+        self.assertFalse(self.plugin._video_inputs)
+        self.assertFalse(FakeClient.instances)
 
     async def test_generic_command_auto_detects_reference_and_strips_url(self):
         reference = types.SimpleNamespace(data=b"reference-image")

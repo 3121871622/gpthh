@@ -309,12 +309,13 @@
   },
   "video_api_mode": {
     "description": "视频异步接口模式",
-    "hint": "legacy：New API 异步视频接口；openai：OpenAI 兼容视频接口。按供应商实际支持的接口选择。",
+    "hint": "legacy：New API 旧版单图；openai：OpenAI 单图文件；images：/v1/videos JSON 数组，支持单图/多图。遇到 images 与旧版单图字段冲突时选择 images；实际能力以供应商为准。",
     "type": "string",
     "default": "legacy",
     "options": [
       "legacy",
-      "openai"
+      "openai",
+      "images"
     ]
   },
   "video_poll_interval": {
@@ -337,7 +338,7 @@
   },
   "video_commands": {
     "description": "视频生成指令",
-    "hint": "每行一个，默认：生成视频 / 视频生成 / 文生视频 / 图生视频。先发送描述（图生视频附带或引用一张图片），再回复 10、10s 或 10秒指定时长。",
+    "hint": "每行一个，默认：生成视频 / 视频生成 / 文生视频 / 图生视频。先发送描述（图生视频附带或引用图片；images 模式支持最多 10 张，其他模式单张），再回复 10、10s 或 10秒指定时长。",
     "type": "list",
     "default": [
       "生成视频",
