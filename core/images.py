@@ -8,9 +8,9 @@
 
 设计约定：
 
-* 采集类函数「尽力而为」：单张图片失败只记录日志，绝不向上抛异常；
-* 只有 :func:`fetch_image` 会对非法输入抛出 ``ProtocolError``，
-  由调用方决定是忽略还是提示用户；
+* 普通采集默认「尽力而为」；视频严格采集在任一参考图读取失败时抛出异常；
+* :func:`fetch_image` 对非法输入抛出 ``ProtocolError``；严格采集向上传播失败，
+  普通采集保留成功结果；
 * 模块顶层的 AstrBot 导入均做了容错处理，脱离 AstrBot 环境也能 ``py_compile`` 与单测。
 """
 
@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import tempfile
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
@@ -635,8 +636,8 @@ async def _ref_to_image_input(ref: Any, source: str) -> "ImageInput | None":
         return None
 
 
-async def _gather_limited(factories: list[Any], limit: int = 4) -> list[Any]:
-    """并发执行协程工厂，最多 ``limit`` 个并发，保持返回顺序（异常转 ``None``）。"""
+async def _gather_limited(factories: list[Any], limit: int = 4, *, strict: bool = False) -> list[Any]:
+    """保持采图顺序；严格模式等待整批读取完成后拒绝任何缺失结果。"""
     if not factories:
         return []
     semaphore = asyncio.Semaphore(max(1, int(limit)))
@@ -646,10 +647,19 @@ async def _gather_limited(factories: list[Any], limit: int = 4) -> list[Any]:
             try:
                 return await factory()
             except Exception as exc:  # noqa: BLE001
+                if strict:
+                    raise
                 logger.warning("并发采集图片失败：%s", exc)
                 return None
 
-    return await asyncio.gather(*(_run(factory) for factory in factories))
+    results = await asyncio.gather(*(_run(factory) for factory in factories), return_exceptions=strict)
+    if strict:
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if result is None or isinstance(result, Exception):
+                raise ProtocolError("有参考图读取失败，请重新发送完整图片后重试。")
+    return results
 
 
 def _dedupe_images(images: list["ImageInput | None"]) -> list["ImageInput"]:
@@ -670,7 +680,7 @@ def _dedupe_images(images: list["ImageInput | None"]) -> list["ImageInput"]:
 # --------------------------------------------------------------------------- #
 # 公开接口：采集
 # --------------------------------------------------------------------------- #
-async def collect_attachment_images(event: Any) -> list[ImageInput]:
+async def collect_attachment_images(event: Any, *, strict: bool = False) -> list[ImageInput]:
     """采集当前消息里附带的图片组件。"""
     components = [
         message for message in _iter_messages(event) if _is_component(message, "Image")
@@ -682,10 +692,10 @@ async def collect_attachment_images(event: Any) -> list[ImageInput]:
         (lambda comp=comp: _component_to_image_input(comp, "attachment"))
         for comp in components
     ]
-    return _dedupe_images(await _gather_limited(factories))
+    return _dedupe_images(await _gather_limited(factories, strict=strict))
 
 
-async def collect_url_images(text: str) -> list[ImageInput]:
+async def collect_url_images(text: str, *, strict: bool = False) -> list[ImageInput]:
     """采集文本中的图片链接（普通链接会保留在文本里，由调用方处理）。"""
     _, links = await extract_image_urls(text or "")
     targets = [link for link in links if looks_like_image_url(link)]
@@ -693,7 +703,7 @@ async def collect_url_images(text: str) -> list[ImageInput]:
         return []
 
     factories = [(lambda link=link: _ref_to_image_input(link, "url")) for link in targets]
-    return _dedupe_images(await _gather_limited(factories))
+    return _dedupe_images(await _gather_limited(factories, strict=strict))
 
 
 class ReplyImageList(list):
@@ -768,7 +778,7 @@ def _decode_reference_sync(value: str) -> "ImageInput | None":
     return None
 
 
-async def extract_reply_images_async(event: Any) -> list[ImageInput]:
+async def extract_reply_images_async(event: Any, *, strict: bool = False) -> list[ImageInput]:
     """异步提取引用消息图片（含 OneBot 远程兜底）。"""
     refs: list[Any] = []
     try:
@@ -788,12 +798,13 @@ async def extract_reply_images_async(event: Any) -> list[ImageInput]:
     images = _dedupe_images(
         await _gather_limited(
             [(lambda ref=ref: _ref_to_image_input(ref, "reply")) for ref in refs],
+            strict=strict,
         ),
     )
     if images:
         return images
 
-    chain_images = await _collect_reply_chain_images(event)
+    chain_images = await _collect_reply_chain_images(event, strict=strict)
     if chain_images:
         return chain_images
 
@@ -801,11 +812,11 @@ async def extract_reply_images_async(event: Any) -> list[ImageInput]:
     if images:
         return images
 
-    fetched = await _fetch_reply_images_via_onebot(event)
+    fetched = await _fetch_reply_images_via_onebot(event, strict=strict)
     return _dedupe_images(fetched)
 
 
-async def _collect_reply_chain_images(event: Any) -> list[ImageInput]:
+async def _collect_reply_chain_images(event: Any, *, strict: bool = False) -> list[ImageInput]:
     """遍历 ``Comp.Reply.chain`` 里的图片组件逐个解码（支持 base64 / URL / 本地文件）。"""
     components: list[Any] = []
     for message in _iter_messages(event):
@@ -821,10 +832,10 @@ async def _collect_reply_chain_images(event: Any) -> list[ImageInput]:
         (lambda comp=comp: _component_to_image_input(comp, "reply"))
         for comp in components
     ]
-    return _dedupe_images(await _gather_limited(factories))
+    return _dedupe_images(await _gather_limited(factories, strict=strict))
 
 
-async def _fetch_reply_images_via_onebot(event: Any) -> list[ImageInput]:
+async def _fetch_reply_images_via_onebot(event: Any, *, strict: bool = False) -> list[ImageInput]:
     """兜底：对 ``aiocqhttp`` 平台用 ``get_msg`` 拉取被引用消息里的图片。"""
     platform = ""
     try:
@@ -869,6 +880,19 @@ async def _fetch_reply_images_via_onebot(event: Any) -> list[ImageInput]:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         segments = data.get("message") if isinstance(data, dict) else None
         if not isinstance(segments, list):
+            continue
+        if strict:
+            # 一个消息图片可能同时带 url/file；它们是替代来源，不能当两张图。
+            components = []
+            for segment in segments:
+                if not isinstance(segment, dict) or str(segment.get("type")) != "image":
+                    continue
+                info = segment.get("data")
+                info = info if isinstance(info, dict) else {}
+                components.append(SimpleNamespace(url=info.get("url"), file=info.get("file")))
+            images.extend(await _gather_limited([
+                (lambda comp=comp: _component_to_image_input(comp, "reply")) for comp in components
+            ], strict=True))
             continue
         refs: list[str] = []
         for segment in segments:
@@ -943,29 +967,37 @@ async def collect_input_images(
 
     顺序为：同消息附件图片 → 文本中的图片链接 → 引用消息图片（需开启）
     → ``include_mentions=True`` 时的 @ 用户头像。最后按 ``cfg.max_input_images()``
-    截断，只保留前 N 张。单张图片失败不会影响其他图片。
+    截断，只保留前 N 张。普通编辑允许部分成功；视频可启用严格模式拒绝丢图。
     """
     images: list[ImageInput] = []
+    strict = _cfg_flag(cfg, "strict_input_images", False)
+    options = {"strict": True} if strict else {}
 
     for collector in (
-        lambda: collect_attachment_images(event),
-        lambda: collect_url_images(_safe_message_str(event)),
+        lambda: collect_attachment_images(event, **options),
+        lambda: collect_url_images(_safe_message_str(event), **options),
     ):
         try:
             images.extend(await collector())
         except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning("采集输入图片失败：%s", exc)
 
     if _cfg_flag(cfg, "reply_reference_image", True):
         try:
-            images.extend(await extract_reply_images_async(event))
+            images.extend(await extract_reply_images_async(event, **options))
         except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning("采集引用图片失败：%s", exc)
 
     if include_mentions:
         try:
             images.extend(await collect_mention_images(event, cfg))
         except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning("采集 @ 头像失败：%s", exc)
 
     deduped = _dedupe_images(images)

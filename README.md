@@ -251,4 +251,4 @@ node tests/test_video_browser.cjs
 
 已安装 Microsoft Edge 时，也可设置环境变量 `TEST_BROWSER_CHANNEL=msedge` 使用本机浏览器；`TEST_PYTHON` 可指定安装了项目依赖的 Python 解释器。该测试不连接真实供应商，也不创建视频任务。
 
-自动化用例使用本地 HTTP 服务和隔离的 AstrBot 事件桩，不需要真实密钥；配置测试可独立运行 `python -B tests/test_video_config.py -v`。本次真实接口测试复现了旧版单图字段冲突，并确认 Images 模式单图、双图均可创建异步任务；双图任务已完成视频生成和下载校验。具体模型能力以供应商为准，AstrBot 聊天平台的实际投递仍需在部署实例中复核。
+自动化用例使用本地 HTTP 服务和隔离的 AstrBot 事件桩，不需要真实密钥；配置测试可独立运行 `python -B tests/test_video_config.py -v`。本次真实接口测试复现了旧版单图字段冲突，并确认 Images 模式单图、双图均可创建异步任务；双图已生成 10 秒视频并通过下载校验，单图本次在上游总等待超时后失败，未完成成片。具体模型能力以供应商为准，AstrBot 聊天平台的实际投递仍需在部署实例中复核。

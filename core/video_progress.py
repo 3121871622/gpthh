@@ -37,13 +37,16 @@ class VideoInput:
 
 
 class VideoImageConfig:
-    """保留采图结果以识别多图，其他图片设置仍委托原配置。"""
+    """视频须完整保留素材：禁用截断并拒绝任何参考图读取失败。"""
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
 
     def max_input_images(self) -> int:
         return 0
+
+    def strict_input_images(self) -> bool:
+        return True
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.cfg, name)
