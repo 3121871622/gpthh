@@ -1820,6 +1820,7 @@ function createSupplierCard(supplier, index) {
       }
       paintStatus();
       paintSupplierListHead();
+      refreshImageModelSection();
       markDirty();
       paintSummary();
     },
@@ -1997,6 +1998,7 @@ function createSupplierCard(supplier, index) {
               if (item.__paintStatus) item.__paintStatus();
             });
             paintSupplierListHead();
+            refreshImageModelSection();
             renderOverview();
             paintSummary();
             toast("已将「" + (supplier.name || "未命名供应商") + "」设为当前供应商（记得保存配置）", "info");
@@ -2111,6 +2113,13 @@ function applyModelToFocusedInput(value) {
 }
 
 /** 「当前协议的模型设置」：生成模型 + 编辑模型 + 获取模型列表。 */
+function refreshImageModelSection() {
+  const host = $("image-model-section");
+  if (!host) return;
+  clear(host);
+  host.appendChild(createModelSection());
+}
+
 function createModelSection() {
   const protocol = state.activeProtocol;
   const models = currentProtocolModels(protocol);
@@ -2211,6 +2220,7 @@ function createModelSection() {
     h("div", { class: "row tight", style: "margin-bottom:10px" }, [
       h("div", { class: "sub-title", style: "margin:0", text: "🧠 当前协议的模型设置" }),
       badge(protocolShortLabelOf(protocol), "plain"),
+      badge("供应商：" + (supplierName || "未选择"), "info"),
       h("span", { class: "spacer" }),
       h("span", { class: "hint", text: "模型按协议分别保存，切换协议不会丢失。" }),
     ]),
@@ -2301,7 +2311,7 @@ function renderSuppliers() {
       h("h3", { text: "🧠 模型设置" }),
       h("span", { class: "hint", text: "按协议分别保存，切换协议自动套用对应模型。" }),
     ]),
-    h("div", { class: "card-body" }, [createModelSection()]),
+    h("div", { class: "card-body", id: "image-model-section" }, [createModelSection()]),
   ]);
 
   host.appendChild(protocolCard);
@@ -3771,7 +3781,7 @@ function validatePayload(payload) {
 
 async function save() {
   const button = $("save-btn");
-  if (state.saving) return;
+  if (state.saving || maintenance.busy) return;
 
   let payload;
   try {
@@ -3790,12 +3800,15 @@ async function save() {
   clearError();
 
   state.saving = true;
+  if ($("ok-banner")) $("ok-banner").hidden = true;
+  if ($("ok-banner-text")) $("ok-banner-text").textContent = "";
   setBusy(button, true, "保存中…");
   try {
-    await apiPost("config", payload);
+    const result = requireApiSuccess(await apiPost("config", payload), "服务端未保存配置");
+    if (!result || result.saved !== true) throw new Error("服务端未确认配置已保存，请重试");
     markClean();
-    showOkBanner("✅ 已保存，重载插件后全部生效");
-    toast("已保存，重载插件后全部生效", "ok");
+    showOkBanner("✅ 已保存配置；需要完整重新初始化时，点击顶部「重载插件」");
+    toast("配置已保存", "ok");
     await loadAll({ keepBanner: true });
   } catch (error) {
     const message = "保存失败：" + errText(error);
@@ -4645,24 +4658,122 @@ function bindSectionNavigation() {
   followHash();
 }
 
+/* ------------------------------------------------------ 更新与重载 */
+const maintenance = { busy: false, jobId: "", lastCheck: null };
+
+function maintenanceStatus(message, kind) {
+  const panel = $("maintenance-panel");
+  if (panel) panel.hidden = false;
+  setResult($("maintenance-message"), message, kind || "info");
+}
+
+function maintenanceBusy(busy) {
+  maintenance.busy = busy;
+  for (const id of ["update-check-btn", "update-install-btn", "plugin-reload-btn", "maintenance-refresh-btn"]) {
+    const button = $(id);
+    if (button) button.disabled = busy || Boolean(maintenance.lastCheck && (
+      (id === "update-install-btn" && maintenance.lastCheck.install_supported === false) ||
+      (id === "plugin-reload-btn" && maintenance.lastCheck.reload_supported === false)));
+  }
+}
+
+async function checkPluginUpdate() {
+  if (maintenance.busy) return;
+  maintenanceBusy(true);
+  maintenance.lastCheck = null;
+  $("update-install-btn").hidden = true;
+  maintenanceStatus("正在检查本仓库的版本及构建修订…");
+  try {
+    const result = requireApiSuccess(await apiGet("update-check"), "检查更新失败");
+    maintenance.lastCheck = result;
+    const detail = result.current_build != null && result.target_build != null
+      ? "（当前修订 " + result.current_build + "，最新修订 " + result.target_build + "）" : "";
+    const capability = result.capability_message ? "；" + result.capability_message : "";
+    maintenanceStatus((result.message || "检查完成") + detail + capability, result.update_available ? "ok" : "info");
+    $("update-install-btn").hidden = !result.update_available;
+    const log = $("maintenance-changelog");
+    if (log) log.textContent = result.changelog || "暂无更新说明";
+  } catch (error) {
+    maintenanceStatus("检查更新失败：" + errText(error), "err");
+  } finally { maintenanceBusy(false); }
+}
+
+async function monitorMaintenanceJob(jobId) {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => window.setTimeout(resolve, 1500));
+    let result;
+    try {
+      let timer;
+      try {
+        result = await Promise.race([
+          apiGet("update-status", { job_id: jobId }),
+          new Promise((resolve, reject) => { timer = window.setTimeout(() => reject(new Error("状态查询超时")), 12000); }),
+        ]);
+      } finally { if (timer) window.clearTimeout(timer); }
+    } catch (error) {
+      maintenanceStatus("插件正在更新或重载，暂时失去连接；正在重新读取任务状态…", "warn");
+      continue;
+    }
+    if (!result || result.job_id !== jobId) {
+      throw new Error("任务状态不匹配，未确认更新或重载完成，请查看 AstrBot 插件管理页");
+    }
+    if (result.ok === false || result.status === "failed") {
+      throw new Error(result.message || "更新或重载失败，请查看 AstrBot 日志");
+    }
+    maintenanceStatus(result.message || "正在执行插件维护…");
+    if (result.status === "succeeded") {
+      maintenanceStatus(result.message || "插件维护已完成并验证新实例", "ok");
+      $("update-install-btn").hidden = true;
+      $("maintenance-refresh-btn").hidden = false;
+      if (!state.dirty) await loadAll({ keepBanner: true });
+      return;
+    }
+  }
+  throw new Error("等待任务状态超时，尚未确认完成。请查看 AstrBot 插件管理页和日志，避免重复安装");
+}
+
+async function startPluginMaintenance(endpoint) {
+  if (maintenance.busy || state.saving) return;
+  if (state.dirty) {
+    maintenanceStatus("请先保存配置，再更新或重载插件，避免丢失未保存的修改", "warn");
+    return;
+  }
+  maintenanceBusy(true);
+  const controls = Array.from(document.querySelectorAll(".layout input, .layout select, .layout textarea, .layout button, #save-btn, #retry-btn"));
+  const disabled = controls.map(node => node.disabled);
+  controls.forEach(node => { node.disabled = true; });
+  maintenanceStatus(endpoint === "update-install" ? "正在提交更新任务，安装后将自动重载…" : "正在提交插件重载任务…");
+  try {
+    const result = await apiPost(endpoint, {});
+    // 已有任务只继续读取状态，不重复触发宿主安装。
+    if (!(result && result.error_code === "maintenance_busy" && result.job_id)) {
+      requireApiSuccess(result, "插件维护请求失败");
+    }
+    if (!result || !result.job_id) throw new Error("服务端未返回任务编号，尚未确认维护任务已启动");
+    maintenance.jobId = result.job_id;
+    maintenanceStatus(result.message || "任务已排队，正在等待真实执行结果…");
+    await monitorMaintenanceJob(result.job_id);
+  } catch (error) {
+    maintenanceStatus("操作未完成：" + errText(error), "err");
+  } finally {
+    controls.forEach((node, index) => { node.disabled = disabled[index]; });
+    maintenanceBusy(false);
+  }
+}
+
 function bindShell() {
   const actions = document.querySelector(".topbar-actions");
   if (actions && !$("update-check-btn")) {
-    const updateButton = h("button", { id: "update-check-btn", type: "button", class: "btn ghost", text: "检查更新", title: "检查插件最新版本" });
-    updateButton.addEventListener("click", async () => {
-      setBusy(updateButton, true, "检查中…");
-      try {
-        const result = await apiGet("update-check");
-        const message = result.message || "检查完成";
-        if (result.update_available && result.download_url) {
-          toast(message, "ok");
-          setResult($("ok-banner"), message + "：" + result.download_url, "ok");
-        } else toast(message, result.ok === false ? "err" : "info");
-      } catch (error) { toast("检查更新失败：" + errText(error), "err"); }
-      finally { setBusy(updateButton, false); }
-    });
+    const updateButton = h("button", { id: "update-check-btn", type: "button", class: "btn ghost", text: "检查更新", title: "检查插件版本与同版本构建修订" });
+    updateButton.addEventListener("click", checkPluginUpdate);
+    const reloadButton = h("button", { id: "plugin-reload-btn", type: "button", class: "btn ghost", text: "重载插件", title: "重新初始化本插件，保留已保存配置" });
+    reloadButton.addEventListener("click", () => startPluginMaintenance("plugin-reload"));
+    actions.insertBefore(reloadButton, actions.firstChild);
     actions.insertBefore(updateButton, actions.firstChild);
   }
+  if ($("update-install-btn")) $("update-install-btn").addEventListener("click", () => startPluginMaintenance("update-install"));
+  if ($("maintenance-refresh-btn")) $("maintenance-refresh-btn").addEventListener("click", () => window.location.reload());
   const saveBtn = $("save-btn");
   if (saveBtn) saveBtn.addEventListener("click", () => save());
 

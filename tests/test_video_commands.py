@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core.commands import KIND_DRAW, KIND_EDIT, KIND_VIDEO, ParsedCommand, parse_command
 from core.stats import PluginStats
+from core.updates import maintenance_message
 from core.videos import MAX_REFERENCE_BYTES, MAX_REFERENCE_IMAGES, MAX_REFERENCE_TOTAL_BYTES
 from core.video_progress import (
     VIDEO_CANCEL_WORDS, VideoImageConfig, VideoInput, VideoProgress,
@@ -61,6 +62,7 @@ def load_main_methods():
         VideoInput=VideoInput, VideoImageConfig=VideoImageConfig, VideoProgress=VideoProgress,
         VIDEO_CANCEL_WORDS=VIDEO_CANCEL_WORDS, is_video_duration_reply=is_video_duration_reply,
         parse_video_seconds=parse_video_seconds,
+        maintenance_message=maintenance_message,
     )
     exec(compile(ast.fix_missing_locations(module), str(ROOT / "main.py"), "exec"), namespace)
     return namespace["Harness"], namespace

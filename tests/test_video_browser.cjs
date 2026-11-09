@@ -40,6 +40,7 @@ const server = http.createServer(async(req,res) => {
       }
     }
     let data = endpoint === 'config' ? saved : endpoint === 'suppliers' ? {suppliers:saved.suppliers} : endpoint === 'status' ? {version} : {};
+    if(endpoint === 'config' && req.method === 'POST') data = {ok:true,saved:true,reloaded:true};
     if(endpoint === 'models') {
       const supplier = url.searchParams.get('supplier') || saved.active_supplier;
       const mode = modelModes.get(supplier) || 'ok';

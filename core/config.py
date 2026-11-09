@@ -923,6 +923,10 @@ class PluginConfig:
         if not target:
             return None
         suppliers = self.suppliers()
+        # 配置、会话和设置页传递的是已保存名称，数字名称不能再次当成序号。
+        for supplier in suppliers:
+            if supplier.name == target:
+                return supplier
         index, _value = resolve_choice(target, [item.name for item in suppliers])
         if index < 0:
             return None

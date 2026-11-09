@@ -1,25 +1,26 @@
-"""插件更新来源回归测试；隔离 AstrBot 宿主，不请求远程服务。"""
+"""固定 main 更新清单与同版本修订检测；全部网络响应来自测试替身。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
+import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from core import updates
 from test_video_config import load_webapi
 
 WEBAPI = load_webapi()
-REPO_URL = "https://github.com/3121871622/gpthh"
-CHANGELOG_URL = "https://raw.githubusercontent.com/3121871622/gpthh/main/CHANGELOG.md"
 CHANGELOG = """# 更新日志
 
 ## v1.0.9 - 2026-11-08
 旧版本说明。
 
-## v1.0.10 - 2026-11-08
-独立视频入口与更新来源修复。
+## v1.0.10 - 2026-11-09
+图片供应商与插件维护修复。
 
 ## v1.0.8 - 2026-09-27
 历史版本说明。
@@ -27,84 +28,116 @@ CHANGELOG = """# 更新日志
 
 
 class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
-    async def check(self, current, changelog=CHANGELOG, error=None):
-        fetch = AsyncMock(return_value=changelog, side_effect=error)
-        with patch.object(WEBAPI, "_read_version", return_value=current), \
-             patch.object(WEBAPI, "_fetch_text", fetch), \
-             patch.object(WEBAPI, "json_response", lambda payload: payload):
+    async def check(self, current="1.0.10", current_build=2026110801, remote=None, changelog=CHANGELOG, error=None):
+        manifest = remote if remote is not None else {"version": "1.0.10", "build": 2026110901}
+        async def fetch(url):
+            if error:
+                raise error
+            return json.dumps(manifest) if url == updates.MANIFEST_URL else changelog
+        mocked = AsyncMock(side_effect=fetch)
+        with patch.object(updates, "_read_local_release", return_value={"version": current, "build": current_build}), patch.object(WEBAPI, "_fetch_text", mocked), patch.object(WEBAPI, "json_response", lambda payload: payload):
             result = await WEBAPI._api_update_check(None)
-        fetch.assert_awaited_once_with(CHANGELOG_URL)
+        self.assertEqual(mocked.await_args_list[0].args, (updates.MANIFEST_URL,))
         return result
 
     async def test_source_constants_and_metadata_point_to_project(self):
         self.assertEqual(WEBAPI.DEFAULT_VERSION, "1.0.10")
-        self.assertEqual(WEBAPI.UPDATE_BASE_URL, REPO_URL)
-        self.assertEqual(WEBAPI.UPDATE_CHANGELOG_URL, CHANGELOG_URL)
-        self.assertIn("repo: " + REPO_URL, (ROOT / "metadata.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(WEBAPI._read_version(), "1.0.10")
+        self.assertEqual(WEBAPI.UPDATE_BASE_URL, updates.REPOSITORY_URL)
+        self.assertEqual(WEBAPI.UPDATE_MANIFEST_URL, updates.MANIFEST_URL)
+        self.assertIn("repo: " + updates.REPOSITORY_URL, (ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+        manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], "1.0.10")
+        self.assertEqual(manifest["build"], 2026110901)
+        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026110901})
 
-    async def test_semantic_109_to_1010_and_versioned_archive_url(self):
-        result = await self.check("1.0.9")
-        self.assertTrue(result["ok"])
+    async def test_semantic_version_comparison_and_fixed_main_archive(self):
+        result = await self.check("1.0.9", 9999999999)
         data = result["data"]
-        self.assertTrue(data["update_available"])
+        self.assertTrue(result["ok"] and data["ok"] and data["update_available"])
         self.assertEqual(data["latest_version"], "1.0.10")
-        self.assertEqual(data["download_url"], REPO_URL + "/archive/refs/tags/v1.0.10.zip")
-        self.assertEqual(data["changelog_url"], CHANGELOG_URL)
-        self.assertTrue(data["changelog"].startswith("## v1.0.10 - 2026-11-08"))
+        self.assertEqual(data["download_url"], updates.REPOSITORY_URL + "/archive/refs/heads/main.zip")
+        self.assertTrue(data["changelog"].startswith("## v1.0.10 - 2026-11-09"))
         self.assertNotIn("## v1.0.8", data["changelog"])
-        self.assertNotIn("docs.317ak.com", str(result))
 
-    async def test_current_version_is_already_latest(self):
-        result = await self.check("1.0.10")
-        data = result["data"]
+    async def test_same_version_new_build_is_an_update(self):
+        data = (await self.check())["data"]
+        self.assertTrue(data["update_available"])
+        self.assertEqual(data["current_build"], 2026110801)
+        self.assertEqual(data["target_build"], 2026110901)
+
+    async def test_identical_build_is_latest(self):
+        data = (await self.check(current_build=2026110901))["data"]
         self.assertFalse(data["update_available"])
-        self.assertEqual(data["current_version"], "1.0.10")
-        self.assertEqual(data["latest_version"], "1.0.10")
         self.assertIn("当前已是最新版本", data["message"])
-        self.assertEqual(data["download_url"], REPO_URL + "/archive/refs/tags/v1.0.10.zip")
 
-    async def test_failure_does_not_offer_old_download(self):
-        result = await self.check("1.0.10", error=TimeoutError("read timeout"))
-        self.assertFalse(result["ok"])
-        data = result["data"]
+    async def test_older_remote_version_is_not_an_update(self):
+        data = (await self.check(remote={"version": "1.0.9", "build": 9999999999}))["data"]
         self.assertFalse(data["update_available"])
-        self.assertEqual(data["latest_version"], "1.0.10")
-        self.assertEqual(data["error"], "read timeout")
-        self.assertNotIn("download_url", data)
-        self.assertEqual(data["changelog_url"], CHANGELOG_URL)
 
-    async def test_real_local_changelog_headings_and_retained_history(self):
-        text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        result = await self.check("1.0.9", text)
-        self.assertEqual(result["data"]["latest_version"], "1.0.10")
-        self.assertIn("独立「视频生成」分区", result["data"]["changelog"])
-        self.assertIn("main/CHANGELOG.md", result["data"]["changelog"])
-        self.assertNotIn("## v1.0.9", result["data"]["changelog"])
-        self.assertIn("## v1.0.9 - 2026-11-08", text)
-        self.assertIn("## v1.0.8 - 2026-09-27", text)
-
-    async def test_no_version_heading_retains_current_version(self):
-        result = await self.check("1.0.10", "暂时没有版本标题")
-        self.assertTrue(result["ok"])
+    async def test_network_failure_has_nested_failure_and_no_download(self):
+        result = await self.check(error=TimeoutError("private response content"))
+        self.assertFalse(result["ok"] or result["data"]["ok"])
         self.assertFalse(result["data"]["update_available"])
-        self.assertEqual(result["data"]["latest_version"], "1.0.10")
-        self.assertEqual(result["data"]["download_url"], REPO_URL + "/archive/refs/tags/v1.0.10.zip")
+        self.assertNotIn("download_url", result["data"])
+        self.assertNotIn("private response content", str(result))
 
-    async def test_fetch_user_agent_uses_current_default_version(self):
+    async def test_invalid_manifest_cannot_offer_an_install(self):
+        cases = [[], {"version": "oops", "build": 1}, {"version": "1.0.10", "build": True}, {"version": "1.0.10", "build": 0}, {"version": "1.0.10", "build": 1.5}, {"version": "1.0.10", "build": 2, "repository": "https://example.invalid/repo"}, {"version": "1.0.10", "build": 2, "branch": "other"}]
+        for manifest in cases:
+            with self.subTest(manifest=manifest):
+                result = await self.check(remote=manifest)
+                self.assertFalse(result["data"]["ok"])
+                self.assertNotIn("download_url", result["data"])
+
+    async def test_changelog_failure_does_not_lose_manifest_result(self):
+        async def fetch(url):
+            if url == updates.CHANGELOG_URL:
+                raise TimeoutError()
+            return json.dumps({"version": "1.0.10", "build": 2026110902})
+        data = await updates.check_update(None, fetch)
+        self.assertTrue(data["ok"] and data["update_available"])
+        self.assertIn("日志暂时读取失败", data["changelog"])
+
+    async def test_real_changelog_retains_old_versions(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        result = await self.check(changelog=changelog)
+        self.assertIn("1.0.10", result["data"]["changelog"])
+        self.assertNotIn("## v1.0.9", result["data"]["changelog"])
+        self.assertIn("## v1.0.9 - 2026-11-08", changelog)
+        self.assertIn("## v1.0.8 - 2026-09-27", changelog)
+
+    async def test_runtime_version_is_a_snapshot_not_changed_files(self):
+        plugin = types.SimpleNamespace()
+        with patch.object(updates, "_read_local_release", return_value={"version": "1.0.10", "build": 5}):
+            before = updates.runtime_info(plugin)
+        with patch.object(updates, "_read_local_release", return_value={"version": "1.0.11", "build": 6}):
+            self.assertEqual(updates.runtime_info(plugin), before)
+
+    async def test_fetch_uses_bounded_read_and_current_user_agent(self):
         response = Mock()
         response.read.return_value = b"\xef\xbb\xbf# Changelog"
         context = Mock()
         context.__enter__ = Mock(return_value=response)
         context.__exit__ = Mock(return_value=False)
         with patch.object(WEBAPI, "urlopen", return_value=context) as request:
-            result = await WEBAPI._fetch_text(CHANGELOG_URL)
+            result = await WEBAPI._fetch_text(updates.CHANGELOG_URL)
         self.assertEqual(result, "# Changelog")
-        request.assert_called_once()
+        response.read.assert_called_once_with(512 * 1024 + 1)
         sent_request = request.call_args.args[0]
-        self.assertEqual(sent_request.full_url, CHANGELOG_URL)
-        self.assertEqual(sent_request.get_header("User-agent"), "astrbot-plugin-gpt-image/" + WEBAPI.DEFAULT_VERSION)
+        self.assertEqual(sent_request.full_url, updates.CHANGELOG_URL)
+        self.assertEqual(sent_request.get_header("User-agent"), "astrbot-plugin-gpt-image/1.0.10")
         self.assertEqual(request.call_args.kwargs["timeout"], 8)
+
+    async def test_fetch_rejects_other_sources_and_oversized_content(self):
+        with self.assertRaises(ValueError):
+            await WEBAPI._fetch_text("https://example.invalid/manifest.json")
+        response = Mock()
+        response.read.return_value = b"x" * (512 * 1024 + 1)
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        with patch.object(WEBAPI, "urlopen", return_value=context), self.assertRaises(ValueError):
+            await WEBAPI._fetch_text(updates.MANIFEST_URL)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,9 @@ from urllib.request import Request as UrlRequest, urlopen
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response as _host_error_response, json_response, request
+
+from . import updates as plugin_updates
 
 from .config import PluginConfig
 from .models import (
@@ -39,7 +41,8 @@ from .models import (
 PLUGIN_NAME = "astrbot_plugin_gpt_image"
 DEFAULT_VERSION = "1.0.10"
 UPDATE_BASE_URL = "https://github.com/3121871622/gpthh"
-UPDATE_CHANGELOG_URL = "https://raw.githubusercontent.com/3121871622/gpthh/main/CHANGELOG.md"
+UPDATE_CHANGELOG_URL = plugin_updates.CHANGELOG_URL
+UPDATE_MANIFEST_URL = plugin_updates.MANIFEST_URL
 
 #: 群聊模式取值
 GROUP_MODES: Tuple[str, ...] = ("all", "whitelist", "blacklist")
@@ -108,6 +111,13 @@ DEFAULT_BASE_URLS: Dict[str, str] = {
 }
 #: 单个协议的模型缓存条数上限
 MODEL_CACHE_LIMIT = 200
+
+
+def error_response(message: str, *, status_code: int = 400, data: Any = None) -> Any:
+    """宿主桥接可能解包 data，错误标记必须随 data 一起保留。"""
+    details = dict(data) if isinstance(data, dict) else {}
+    details.update({"ok": False, "message": message})
+    return _host_error_response(message, status_code=status_code, data=details)
 
 
 class _ValidationError(ValueError):
@@ -1651,66 +1661,60 @@ async def _api_save_config(plugin: Any) -> Any:
             reloaded = True
     except Exception:
         reloaded = False
-    return json_response({"ok": True, "data": {"saved": True, "reloaded": reloaded}})
+    return json_response({"ok": True, "data": {"ok": True, "saved": True, "config_reloaded": reloaded, "plugin_reloaded": False, "message": "配置已保存；如需重新初始化插件，请点击重载插件。"}})
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
-    match = re.search(r"\d+(?:\.\d+)+", str(value or ""))
-    if not match:
-        return (0,)
-    return tuple(int(part) for part in match.group(0).split("."))
+    return plugin_updates.version_key(value)
 
 
 def _extract_changelog(text: str, version: str) -> str:
-    if not text:
-        return ""
-    escaped = re.escape(version.lstrip("vV"))
-    heading = r"^[ \t]*#{1,6}[ \t]*(?:v)?\d+(?:\.\d+)+(?:[ \t]*[-\u2013\u2014:][ \t]*[^\r\n]*)?$"
-    pattern = re.compile(
-        rf"(?ims)^[ \t]*#{{1,6}}[ \t]*(?:v)?{escaped}(?:[ \t]*[-\u2013\u2014:][ \t]*[^\r\n]*)?$.*?(?={heading}|\Z)"
-    )
-    match = pattern.search(text)
-    if match:
-        return match.group(0).strip()
-    return text[:4000].strip()
+    return plugin_updates.extract_changelog(text, version)
 
 
 async def _fetch_text(url: str) -> str:
+    if url not in (UPDATE_MANIFEST_URL, UPDATE_CHANGELOG_URL):
+        raise ValueError("只允许读取本项目固定更新源")
     def fetch() -> str:
-        request_obj = UrlRequest(url, headers={"User-Agent": "astrbot-plugin-gpt-image/" + DEFAULT_VERSION})
+        request_obj = UrlRequest(url, headers={
+            "User-Agent": "astrbot-plugin-gpt-image/" + DEFAULT_VERSION,
+            "Cache-Control": "no-cache", "Pragma": "no-cache",
+        })
         with urlopen(request_obj, timeout=8) as response:
-            return response.read().decode("utf-8-sig", errors="replace")
+            content = response.read(512 * 1024 + 1)
+            if len(content) > 512 * 1024:
+                raise ValueError("更新源响应过大")
+            return content.decode("utf-8-sig", errors="replace")
     return await asyncio.to_thread(fetch)
 
 
 async def _api_update_check(plugin: Any) -> Any:
-    current = _read_version()
+    data = await plugin_updates.check_update(plugin, _fetch_text)
+    return json_response({"ok": data["ok"], "data": data})
+
+
+async def _start_plugin_maintenance(plugin: Any, operation: str) -> Any:
+    payload = await request.json(default={})
+    if not isinstance(payload, dict) or payload:
+        return error_response("维护接口只接受空 JSON 对象，不接受仓库、下载地址或插件名称。", data={"status": "failed", "error_code": "invalid_request"})
     try:
-        changelog = await _fetch_text(UPDATE_CHANGELOG_URL)
-        versions = re.findall(
-            r"(?im)^[ \t]*#{1,6}[ \t]*v?(\d+(?:\.\d+)+)(?:[ \t]*[-\u2013\u2014:][ \t]*[^\r\n]*)?$",
-            changelog,
-        )
-        latest = max(versions, key=_version_tuple) if versions else current
-        entry = _extract_changelog(changelog, latest)
-        return json_response({"ok": True, "data": {
-            "current_version": current,
-            "latest_version": latest,
-            "update_available": _version_tuple(latest) > _version_tuple(current),
-            "message": "发现新版本 v%s" % latest if _version_tuple(latest) > _version_tuple(current) else "当前已是最新版本（v%s）" % current,
-            "changelog": entry,
-            "download_url": UPDATE_BASE_URL + "/archive/refs/tags/v%s.zip" % latest,
-            "changelog_url": UPDATE_CHANGELOG_URL,
-        }})
-    except Exception as exc:
-        return json_response({"ok": False, "data": {
-            "current_version": current,
-            "latest_version": current,
-            "update_available": False,
-            "message": "检查更新失败，请检查网络或更新地址",
-            "error": str(exc)[:240],
-            "changelog_url": UPDATE_CHANGELOG_URL,
-        }})
+        data = plugin_updates.start_maintenance(plugin, operation, _fetch_text)
+    except plugin_updates.MaintenanceError as exc:
+        data = {"ok": False, "status": "failed", "error_code": exc.code, "message": str(exc)}
+    return json_response({"ok": data["ok"], "data": data})
+
+
+async def _api_update_install(plugin: Any) -> Any:
+    return await _start_plugin_maintenance(plugin, "install")
+
+
+async def _api_plugin_reload(plugin: Any) -> Any:
+    return await _start_plugin_maintenance(plugin, "reload")
+
+
+async def _api_update_status(plugin: Any) -> Any:
+    data = plugin_updates.get_update_status(plugin, _text(request.query.get("job_id")))
+    return json_response({"ok": data["ok"], "data": data})
 
 
 async def _api_suppliers(plugin: Any) -> Any:
@@ -2340,6 +2344,7 @@ async def _api_recent(plugin: Any) -> Any:
 
 async def _api_status(plugin: Any) -> Any:
     cfg = plugin.cfg
+    runtime = plugin_updates.runtime_info(plugin)
     names = _supplier_names(cfg)
     active_supplier = _call_text(cfg, "active_supplier_name") or _call_text(cfg, "active_channel_name")
     protocol = normalize_protocol(_call_text(cfg, "active_protocol")) or PROTOCOL_KEYS[0]
@@ -2357,7 +2362,10 @@ async def _api_status(plugin: Any) -> Any:
         model = _call_text(cfg, "model_for", protocol) or default_model_for(protocol)
 
     data = {
-        "version": _read_version(),
+        "version": runtime["version"],
+        "build": runtime["build"],
+        "instance_id": runtime["instance_id"],
+        "ready": runtime["ready"],
         "active_supplier": active_supplier,
         "supplier_index": (names.index(active_supplier) + 1) if active_supplier in names else 0,
         "supplier_total": len(names),
@@ -2425,11 +2433,12 @@ async def _api_delete_size(plugin: Any) -> Any:
 
 
 # -------------------------------------------------------------------- 注册入口
-def register_web_apis(plugin: Any) -> None:
+def register_web_apis(plugin: Any) -> bool:
     """注册设置界面所需的全部 Web API。
 
     :param plugin: ``Main`` 实例，需具备 ``context`` / ``cfg`` / ``state`` / ``logger``。
     """
+    plugin_updates.bind_plugin_runtime(plugin)
     context = getattr(plugin, "context", None)
     register = getattr(context, "register_web_api", None)
     if not callable(register):
@@ -2437,7 +2446,7 @@ def register_web_apis(plugin: Any) -> None:
             plugin.logger.warning("[%s] 当前 AstrBot 不支持插件 Web API，跳过注册" % PLUGIN_NAME)
         except Exception:  # noqa: BLE001
             pass
-        return
+        return False
 
     def bind(func: Any, label: str) -> Any:
         """把 ``func(plugin, ...)`` 绑定为无参 handler，并加上异常兜底。"""
@@ -2481,6 +2490,9 @@ def register_web_apis(plugin: Any) -> None:
     register(base + "/protocols", bind(_api_protocols, "GET /protocols"), ["GET"], "获取协议选项")
     register(base + "/models", bind(_api_list_models, "GET /models"), ["GET"], "拉取模型列表")
     register(base + "/update-check", bind(_api_update_check, "GET /update-check"), ["GET"], "检查插件更新")
+    register(base + "/update-install", bind(_api_update_install, "POST /update-install"), ["POST"], "安装本插件更新并由宿主重载")
+    register(base + "/plugin-reload", bind(_api_plugin_reload, "POST /plugin-reload"), ["POST"], "重载当前插件")
+    register(base + "/update-status", bind(_api_update_status, "GET /update-status"), ["GET"], "查询跨重载维护任务状态")
     register(
         base + "/platforms",
         bind(_api_list_platforms, "GET /platforms"),
@@ -2498,6 +2510,7 @@ def register_web_apis(plugin: Any) -> None:
     register(base + "/sizes", bind(_api_get_sizes, "GET /sizes"), ["GET"], "获取尺寸列表")
     register(base + "/sizes/add", bind(_api_add_size, "POST /sizes/add"), ["POST"], "添加尺寸")
     register(base + "/sizes/delete", bind(_api_delete_size, "POST /sizes/delete"), ["POST"], "删除尺寸")
+    return True
 
 
 __all__ = ["PLUGIN_NAME", "register_web_apis"]

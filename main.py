@@ -92,6 +92,7 @@ from .core.presets import (
 from .core.state import SessionState
 from .core.stats import PluginStats
 from .core.webapi import register_web_apis
+from .core.updates import mark_plugin_ready, maintenance_message
 from .core.videos import (
     MAX_REFERENCE_BYTES, MAX_REFERENCE_IMAGES, MAX_REFERENCE_TOTAL_BYTES,
     VideoClient, VideoError,
@@ -388,6 +389,8 @@ class Main(star.Star):
         #: 最近交互过的用户 / 群（供设置页「一键获取」使用），最新在前
         self.recent_users: list = []
         self.recent_groups: list = []
+        #: 登记整段图片会话，更新前同时检查等待并发额度与正在请求的任务。
+        self._image_tasks: set = set()
         #: 视频任务独立计数，避免长轮询占用绘画的并发额度。
         self._video_tasks: set = set()
         self._video_pending: set = set()
@@ -408,9 +411,11 @@ class Main(star.Star):
             await self.state.load()
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[gpt-image] 加载会话状态失败：{exc}")
+        web_ready = False
         try:
-            register_web_apis(self)
-            logger.info("[gpt-image] 设置页面与 Web API 注册完成")
+            web_ready = register_web_apis(self) is True
+            if web_ready:
+                logger.info("[gpt-image] 设置页面与 Web API 注册完成")
         except Exception as exc:  # noqa: BLE001
             logger.error(f"[gpt-image] 注册 Web API 失败：{exc}")
         logger.info(
@@ -421,6 +426,8 @@ class Main(star.Star):
                 self.cfg.active_protocol(),
             )
         )
+        if web_ready:
+            mark_plugin_ready(self)
 
     async def terminate(self) -> None:
         _DrawingCommandFilter.plugin = None
@@ -1049,6 +1056,10 @@ class Main(star.Star):
 
     async def _video(self, event: AstrMessageEvent, parsed: ParsedCommand) -> None:
         """先收集描述与参考图，按接口模式校验，等待同一用户回复时长后才提交。"""
+        maintenance = maintenance_message(self)
+        if maintenance:
+            await self._reply(event, maintenance)
+            return
         if self._video_closing:
             await self._reply(event, "插件正在重载，请稍后再生成视频。")
             return
@@ -1154,6 +1165,10 @@ class Main(star.Star):
         if text.lower() in VIDEO_CANCEL_WORDS:
             self._discard_video_input(key, pending)
             await self._reply(event, "已取消本次视频生成，未提交任务。")
+            return
+        maintenance = maintenance_message(self)
+        if maintenance:
+            await self._reply(event, maintenance)
             return
         if not pending.ready:
             await self._reply(event, "正在读取参考图，请稍后再回复视频时长。")
@@ -1433,7 +1448,15 @@ class Main(star.Star):
 
     async def _draw(self, event: AstrMessageEvent, parsed: ParsedCommand) -> None:
         """执行一次绘画/编辑会话，并统一收口取消统计。"""
+        maintenance = maintenance_message(self)
+        if maintenance:
+            await self._reply(event, maintenance)
+            return
         task_id = uuid.uuid4().hex[:12]
+        task = asyncio.current_task()
+        # 检查维护状态到登记之间不 await，避免更新检查空闲后插入新任务。
+        if task is not None:
+            self._image_tasks.add(task)
         try:
             await self._draw_impl(event, parsed, task_id)
         except asyncio.CancelledError:
@@ -1452,6 +1475,9 @@ class Main(star.Star):
                     error="%s: %s" % (type(exc).__name__, exc),
                 )
             raise
+        finally:
+            if task is not None:
+                self._image_tasks.discard(task)
 
     async def _draw_impl(
         self, event: AstrMessageEvent, parsed: ParsedCommand, task_id: str

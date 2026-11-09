@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>GPT Image 绘画 · 插件设置 v1.0.10</title>
-    <link rel="stylesheet" href="./style.css?v=1.0.10" />
+    <link rel="stylesheet" href="./style.css?v=1.0.10&rev=supplier-update-2026110901" />
   </head>
   <body>
     <header class="topbar" id="top" aria-labelledby="page-title">
@@ -15,6 +15,17 @@
       <div class="banner error" id="error-banner" role="alert" aria-live="assertive" aria-atomic="true" hidden><span class="banner-text" id="error-banner-text"></span><button type="button" class="btn tiny" id="retry-btn">重试加载</button></div>
       <div class="banner ok" id="ok-banner" role="status" aria-live="polite" aria-atomic="true" hidden><span id="ok-banner-text"></span></div>
     </header>
+    <section id="maintenance-panel" class="card" aria-label="插件更新与重载" style="max-width:1400px;margin:16px auto" hidden>
+      <div class="card-body">
+        <div id="maintenance-message" class="result" role="status" aria-live="polite"></div>
+        <div class="row tight">
+          <button id="update-install-btn" type="button" class="btn" hidden>安装更新并重载</button>
+          <button id="maintenance-refresh-btn" type="button" class="btn ghost" hidden>刷新设置页</button>
+          <span class="hint">更新前请保存配置并等待生成任务结束；更新由 AstrBot 安装并自动重载。</span>
+        </div>
+        <details><summary>更新说明</summary><pre id="maintenance-changelog" style="white-space:pre-wrap;overflow-wrap:anywhere">点击「检查更新」读取说明。</pre></details>
+      </div>
+    </section>
 
     <section class="workbench-intro" aria-labelledby="workspace-title">
       <div class="workbench-hero"><div class="hero-copy"><p class="hero-kicker">GPT IMAGE CONTROL CENTER</p><h2 id="workspace-title">插件配置工作台</h2><p>按配置分区管理供应商、模型、指令、菜单和运行策略。顶部导航用于切换配置范围，修改后统一保存。</p></div><div class="hero-side"><div class="hero-meta" aria-label="当前配置摘要"><span class="sum-pill" id="hero-supplier">供应商同步中</span><span class="sum-pill" id="hero-model">模型同步中</span></div><div class="operation-status"><span class="status-dot" aria-hidden="true"></span><div><b>运营配置</b><span>状态与配置实时同步</span></div></div></div></div>
@@ -41,6 +52,6 @@
     <div class="sticky-actions" role="region" aria-label="配置保存操作"><div class="sticky-status"><span class="status-dot" aria-hidden="true"></span><span><b>配置工作区</b><small>修改完成后保存才会写入插件</small></span></div><span class="dirty-flag" id="sticky-dirty-hint" hidden>待保存</span><a class="btn ghost" href="#top">返回顶部</a><button type="button" class="btn primary" id="save-btn">保存配置</button></div>
     <div class="toast-host" id="toast-host" aria-live="polite"></div><div id="modal-host"></div>
     <div class="modal-mask" id="manual-copy-dialog" hidden><div class="modal" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title" aria-describedby="manual-copy-hint"><div class="modal-head" id="manual-copy-title">手动复制</div><div class="modal-body"><p id="manual-copy-hint">自动复制不可用。文本已选中，请按 Ctrl+C 或长按文本复制。</p><textarea class="textarea" id="manual-copy-text" rows="5" readonly aria-label="待复制的示例文本"></textarea></div><div class="modal-foot"><button type="button" class="btn" id="manual-copy-select">全选文本</button><button type="button" class="btn primary" id="manual-copy-close">关闭</button></div></div></div>
-    <script type="module" src="./app.js?v=1.0.10&rev=video-images-1"></script>
+    <script type="module" src="./app.js?v=1.0.10&rev=supplier-update-2026110901"></script>
   </body>
 </html>

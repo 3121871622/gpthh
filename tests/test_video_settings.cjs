@@ -206,8 +206,8 @@ function textOf(node) { return (node.textContent || '') + node.children.map(text
   const html = fs.readFileSync(path.join(root, 'pages/settings/index.html'), 'utf8');
   assert.match(html, /id="section-videos"/);
   assert.match(html, /id="videos-body"/);
-  assert.match(html, /href="\.\/style\.css\?v=1\.0\.10"/);
-  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=video-images-1"/);
+  assert.match(html, /href="\.\/style\.css\?v=1\.0\.10&rev=supplier-update-2026110901"/);
+  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=supplier-update-2026110901"/);
   assert.match(source, /FALLBACK_VERSION = "1\.0\.10"/);
 
   api.state.config.video_supplier = '';

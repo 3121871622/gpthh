@@ -1530,6 +1530,8 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); backgroun
 /* ------------------------------------------------------------------ ⑲ Toast */
 
 .toast-host {
+  /* 提示无交互控件，避免覆盖右下角保存按钮时吞掉点击。 */
+  pointer-events: none;
   position: fixed;
   right: 16px;
   bottom: 16px;
