@@ -47,8 +47,8 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repo: " + updates.REPOSITORY_URL, (ROOT / "metadata.yaml").read_text(encoding="utf-8"))
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["version"], "1.0.10")
-        self.assertEqual(manifest["build"], 2026111001)
-        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026111001})
+        self.assertEqual(manifest["build"], 2026111002)
+        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026111002})
 
     async def test_semantic_version_comparison_and_fixed_main_archive(self):
         result = await self.check("1.0.9", 9999999999)
@@ -126,9 +126,25 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "# Changelog")
         response.read.assert_called_once_with(512 * 1024 + 1)
         sent_request = request.call_args.args[0]
-        self.assertEqual(sent_request.full_url, updates.CHANGELOG_URL)
+        self.assertEqual(sent_request.full_url, "https://api.github.com/repos/3121871622/gpthh/contents/CHANGELOG.md?ref=main")
+        self.assertEqual(sent_request.get_header("Accept"), "application/vnd.github.raw+json")
+        self.assertIsNone(sent_request.get_header("Authorization"))
         self.assertEqual(sent_request.get_header("User-agent"), "astrbot-plugin-gpt-image/1.0.10")
         self.assertEqual(request.call_args.kwargs["timeout"], 8)
+
+    async def test_manifest_reads_fixed_official_api_without_credentials(self):
+        response = Mock()
+        response.read.return_value = b'{"version":"1.0.10","build":2}'
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        with patch.object(WEBAPI, "urlopen", return_value=context) as request:
+            content = await WEBAPI._fetch_text(updates.MANIFEST_URL)
+        self.assertEqual(json.loads(content)["build"], 2)
+        sent = request.call_args.args[0]
+        self.assertEqual(sent.full_url, "https://api.github.com/repos/3121871622/gpthh/contents/update-manifest.json?ref=main")
+        self.assertEqual(sent.get_header("Accept"), "application/vnd.github.raw+json")
+        self.assertIsNone(sent.get_header("Authorization"))
 
     async def test_fetch_rejects_other_sources_and_oversized_content(self):
         with self.assertRaises(ValueError):

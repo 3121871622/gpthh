@@ -1675,9 +1675,13 @@ def _extract_changelog(text: str, version: str) -> str:
 async def _fetch_text(url: str) -> str:
     if url not in (UPDATE_MANIFEST_URL, UPDATE_CHANGELOG_URL):
         raise ValueError("只允许读取本项目固定更新源")
+    # 固定读取本仓库的原始文件；部分网络会断开 raw 域名，官方 Contents API 可直接返回同样内容。
+    content_name = "update-manifest.json" if url == UPDATE_MANIFEST_URL else "CHANGELOG.md"
+    content_url = "https://api.github.com/repos/3121871622/gpthh/contents/" + content_name + "?ref=main"
     def fetch() -> str:
-        request_obj = UrlRequest(url, headers={
+        request_obj = UrlRequest(content_url, headers={
             "User-Agent": "astrbot-plugin-gpt-image/" + DEFAULT_VERSION,
+            "Accept": "application/vnd.github.raw+json",
             "Cache-Control": "no-cache", "Pragma": "no-cache",
         })
         with urlopen(request_obj, timeout=8) as response:
