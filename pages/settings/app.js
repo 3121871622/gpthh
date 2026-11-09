@@ -1841,6 +1841,7 @@ function createSupplierCard(supplier, index) {
     placeholder: "https://api.example.com/v1",
     oninput: (event) => {
       supplier.base_url = event.currentTarget.value;
+      invalidateModelDiscovery("供应商地址已修改，保存后可重新检测。");
       paintStatus();
       markDirty();
     },
@@ -1856,6 +1857,7 @@ function createSupplierCard(supplier, index) {
       : "填写中转站密钥 / KEY（留空表示不修改）",
     oninput: (event) => {
       supplier.api_key = event.currentTarget.value;
+      invalidateModelDiscovery("供应商密钥已修改，保存后可重新检测。");
       if (String(event.currentTarget.value || "") !== "") supplier.api_key_clear = false;
       paintStatus();
       markDirty();
@@ -1884,6 +1886,7 @@ function createSupplierCard(supplier, index) {
       if (!ok) return;
       supplier.api_key = "";
       supplier.api_key_clear = true;
+      invalidateModelDiscovery("供应商密钥待清空，请先保存配置。");
       keyInput.value = "";
       paintStatus();
       markDirty();
@@ -2100,17 +2103,231 @@ function applyModelToFocusedInput(value) {
     editors.editModelInput.value = value;
     currentProtocolModels(editors.protocol).edit_model = value;
     markDirty();
+    scheduleModelDiscovery();
     return "编辑模型";
   }
   if (editors.modelInput) {
     editors.modelInput.value = value;
     currentProtocolModels(editors.protocol).model = value;
     markDirty();
+    scheduleModelDiscovery();
     paintSummary();
     return "生成模型";
   }
   return "";
 }
+
+/* -------------------------------------------- 按模型查找已保存的供应商 */
+const modelDiscovery = { sequence: 0, timer: null, queue: [], active: 0, run: null, host: null };
+const MODEL_DISCOVERY_DELAY = 700;
+const MODEL_DISCOVERY_TIMEOUT = 15000;
+
+function rememberSavedSuppliers() {
+  state.savedSuppliers = new Map(state.suppliers.map(supplier => [String(supplier.name || ""), {
+    base_url: String(supplier.base_url || "").trim(),
+    api_key_set: Boolean(supplier.api_key_set),
+  }]));
+}
+
+function supplierNeedsSave(supplier) {
+  const name = String(supplier.name || "");
+  const previous = state.savedSuppliers && state.savedSuppliers.get(name);
+  return !name || !previous || state.suppliers.filter(item => item.name === name).length !== 1 ||
+    previous.base_url !== String(supplier.base_url || "").trim() ||
+    String(supplier.api_key || "").trim() !== "" || supplier.api_key_clear === true ||
+    previous.api_key_set !== Boolean(supplier.api_key_set);
+}
+
+function invalidateModelDiscovery(message) {
+  modelDiscovery.sequence += 1;
+  if (modelDiscovery.timer) window.clearTimeout(modelDiscovery.timer);
+  modelDiscovery.timer = null;
+  modelDiscovery.queue = [];
+  modelDiscovery.run = null;
+  const stop = $("model-discovery-stop");
+  if (stop) stop.hidden = true;
+  const check = $("model-discovery-check");
+  if (check) check.disabled = false;
+  const list = $("model-discovery-results");
+  if (list) clear(list);
+  if (message) setResult($("model-discovery-status"), message, "info");
+}
+
+function discoveryTarget() {
+  const editors = state.modelEditors;
+  const purpose = editors && editors.lastFocus === "edit_model" ? "edit" : "generate";
+  const models = currentProtocolModels(state.activeProtocol);
+  const model = String(purpose === "edit" ? models.edit_model || models.model || "" : models.model || "").trim();
+  return { purpose, model, protocol: state.activeProtocol };
+}
+
+function scheduleModelDiscovery() {
+  invalidateModelDiscovery();
+  const target = discoveryTarget();
+  if (!target.model) {
+    setResult($("model-discovery-status"), "填写模型名称后自动检测，也可点击「检测供应商」。", "info");
+    return;
+  }
+  const sequence = modelDiscovery.sequence;
+  setResult($("model-discovery-status"), "等待输入完成后检查「" + target.model + "」…", "info");
+  modelDiscovery.timer = window.setTimeout(() => {
+    if (sequence === modelDiscovery.sequence) startModelDiscovery(false);
+  }, MODEL_DISCOVERY_DELAY);
+}
+
+function discoveryIsCurrent(run) {
+  return run && run === modelDiscovery.run && run.sequence === modelDiscovery.sequence &&
+    run.host === $("model-discovery-panel");
+}
+
+function paintDiscoveryProgress(run) {
+  if (!discoveryIsCurrent(run)) return;
+  const finished = run.finished >= run.rows.length;
+  const matched = run.rows.filter(row => row.result && row.result.matched === true).length;
+  const skipped = run.rows.filter(row => row.status === "unsaved").length;
+  const field = run.purpose === "edit" ? "编辑模型" : "生成模型";
+  setResult($("model-discovery-status"), field + "「" + run.model + "」 · " + protocolShortLabelOf(run.protocol) +
+    " · 已处理 " + run.finished + "/" + run.rows.length + " 家" +
+    (skipped ? "（" + skipped + " 家待保存）" : "") +
+    (finished ? "；" + matched + " 家目录匹配。目录匹配不代表已验证生成。" : "，正在逐家检测…"), finished ? "info" : "loading");
+  const stop = $("model-discovery-stop");
+  if (stop) stop.hidden = finished;
+  const check = $("model-discovery-check");
+  if (check) check.disabled = !finished;
+}
+
+function paintDiscoveryRow(run, row) {
+  if (!discoveryIsCurrent(run)) return;
+  const node = row.node;
+  node.setAttribute("data-status", row.status);
+  clear(node);
+  const result = row.result;
+  const heading = h("div", { class: "row tight" }, [h("strong", { text: row.name || "未命名供应商" })]);
+  if (result && result.matched === true) heading.appendChild(badge("目录精确匹配", "ok"));
+  if (row.status === "case_mismatch") heading.appendChild(badge("模型大小写不同", "warn"));
+  const source = result ? (result.cached ? "来源：近期目录缓存，未重新验证连接。" :
+    result.connection === "online" ? "本次已收到供应商响应。" : "") : "";
+  node.appendChild(h("div", { class: "model-discovery-info" }, [heading,
+    h("div", { class: "hint", text: row.message || "等待检测…" }),
+    source ? h("div", { class: "hint", text: source }) : null,
+  ]));
+  if (result && result.matched === true) {
+    node.appendChild(h("button", { class: "btn tiny", type: "button", "data-action": "select-supplier",
+      text: row.name === activeSupplierName() ? "当前供应商" : "使用此供应商", disabled: row.name === activeSupplierName(),
+      onclick: () => {
+        if (!discoveryIsCurrent(run)) return;
+        const supplier = state.suppliers.find(item => item.name === row.name);
+        if (!supplier || supplierNeedsSave(supplier)) { invalidateModelDiscovery("供应商已修改，请保存后重新检测。"); return; }
+        state.config.active_supplier = row.name;
+        markDirty();
+        renderSuppliers();
+        renderOverview();
+        paintSummary();
+        toast("已选择「" + row.name + "」，保存配置后生效", "info");
+      },
+    }));
+  }
+  if (result && row.status === "case_mismatch" && result.canonical_model) {
+    node.appendChild(h("button", { class: "btn tiny ghost", type: "button", "data-action": "use-model-id", text: "采用模型 ID：" + result.canonical_model,
+      onclick: () => {
+        if (!discoveryIsCurrent(run)) return;
+        state.modelEditors.lastFocus = run.purpose === "edit" ? "edit_model" : "model";
+        applyModelToFocusedInput(result.canonical_model);
+      },
+    }));
+  }
+}
+
+async function executeDiscoveryRequest(work) {
+  const { run, row } = work;
+  row.status = "checking";
+  row.message = "正在查询该供应商的模型目录…";
+  paintDiscoveryRow(run, row);
+  let timer;
+  try {
+    const response = await Promise.race([
+      apiGet("suppliers/model-check", { supplier: row.name, protocol: run.protocol, model: run.model, purpose: run.purpose, refresh: run.refresh ? 1 : 0 }),
+      new Promise((resolve, reject) => { timer = window.setTimeout(() => reject(new Error("查询超时，请稍后重新检测")), MODEL_DISCOVERY_TIMEOUT); }),
+    ]);
+    if (!discoveryIsCurrent(run)) return;
+    if (!response || response.supplier !== row.name || response.protocol !== run.protocol ||
+        response.model !== run.model || response.purpose !== run.purpose) throw new Error("返回来源不匹配，未采用检测结果");
+    if (!["matched", "case_mismatch", "not_found", "catalog_unavailable", "auth_failed", "timeout", "network_error", "invalid"].includes(response.status)) {
+      throw new Error("供应商返回了无法识别的检测状态");
+    }
+    if (response.matched === true && (response.ok === false || response.status !== "matched" ||
+        (response.canonical_model && response.canonical_model !== run.model))) throw new Error("检测结果不一致，未确认该模型");
+    row.result = response;
+    row.status = response.status;
+    row.message = response.message || (response.matched === true ? "该供应商返回目录包含此模型；尚未提交生成测试。" : "未确认该模型，请检查供应商配置。");
+  } catch (error) {
+    if (!discoveryIsCurrent(run)) return;
+    row.status = /超时/.test(errText(error)) ? "timeout" : "network_error";
+    row.message = errText(error);
+  } finally {
+    if (timer) window.clearTimeout(timer);
+    if (discoveryIsCurrent(run)) {
+      run.finished += 1;
+      paintDiscoveryRow(run, row);
+      paintDiscoveryProgress(run);
+    }
+  }
+}
+
+function pumpDiscoveryQueue() {
+  while (modelDiscovery.active < 2 && modelDiscovery.queue.length) {
+    const work = modelDiscovery.queue.shift();
+    if (!discoveryIsCurrent(work.run)) continue;
+    modelDiscovery.active += 1;
+    executeDiscoveryRequest(work).finally(() => {
+      modelDiscovery.active -= 1;
+      pumpDiscoveryQueue();
+    });
+  }
+}
+
+function startModelDiscovery(refresh) {
+  invalidateModelDiscovery();
+  const target = discoveryTarget();
+  if (!target.model) { setResult($("model-discovery-status"), "请先填写生成模型或编辑模型名称。", "warn"); return; }
+  if (maintenance.busy) { setResult($("model-discovery-status"), "请等待插件维护操作结束后再检测。", "warn"); return; }
+  const host = $("model-discovery-panel");
+  if (!host) return;
+  const run = { ...target, host, sequence: modelDiscovery.sequence, refresh, finished: 0, rows: [] };
+  modelDiscovery.run = run;
+  for (const supplier of state.suppliers) {
+    const row = { name: String(supplier.name || ""), status: "queued", result: null,
+      node: h("div", { class: "model-discovery-row", "data-supplier": String(supplier.name || ""), "data-status": "queued" }) };
+    run.rows.push(row);
+    $("model-discovery-results").appendChild(row.node);
+    if (supplierNeedsSave(supplier)) {
+      row.status = "unsaved";
+      row.message = "地址、名称或密钥尚未保存，请先保存该供应商后检测。";
+      run.finished += 1;
+    } else modelDiscovery.queue.push({ run, row });
+    paintDiscoveryRow(run, row);
+  }
+  if (!run.rows.length) setResult($("model-discovery-status"), "请先添加并保存供应商。", "warn");
+  else paintDiscoveryProgress(run);
+  pumpDiscoveryQueue();
+}
+
+function createModelDiscoveryPanel() {
+  invalidateModelDiscovery();
+  const panel = h("div", { id: "model-discovery-panel", class: "model-discovery-panel" }, [
+    h("div", { class: "row tight" }, [h("strong", { text: "按模型查找供应商" }),
+      h("button", { id: "model-discovery-check", class: "btn tiny", type: "button", text: "检测供应商", onclick: () => startModelDiscovery(true) }),
+      h("button", { id: "model-discovery-stop", class: "btn tiny ghost", type: "button", text: "停止检测", hidden: true,
+        onclick: () => invalidateModelDiscovery("已停止等待和后续查询，已发出的目录请求将自行结束。") }),
+    ]),
+    h("div", { class: "hint", text: "输入模型后自动检测已保存的供应商；仅查询模型目录，不提交生成任务。匹配后可手动选择，再保存配置。" }),
+    h("div", { id: "model-discovery-status", class: "result", role: "status", "aria-live": "polite", text: "填写模型名称后自动检测，也可点击「检测供应商」。" }),
+    h("div", { id: "model-discovery-results" }),
+  ]);
+  modelDiscovery.host = panel;
+  return panel;
+}
+
 
 /** 「当前协议的模型设置」：生成模型 + 编辑模型 + 获取模型列表。 */
 function refreshImageModelSection() {
@@ -2137,6 +2354,7 @@ function createModelSection() {
       currentProtocolModels(protocol).model = event.currentTarget.value;
       state.modelEditors.lastFocus = "model";
       markDirty();
+      scheduleModelDiscovery();
       paintSummary();
     },
     onfocus: () => {
@@ -2154,6 +2372,7 @@ function createModelSection() {
       currentProtocolModels(protocol).edit_model = event.currentTarget.value;
       state.modelEditors.lastFocus = "edit_model";
       markDirty();
+      scheduleModelDiscovery();
     },
     onfocus: () => {
       state.modelEditors.lastFocus = "edit_model";
@@ -2234,6 +2453,7 @@ function createModelSection() {
       "点击模型标签会写入你最后点击的输入框（生成模型 / 编辑模型）。" }),
     pickerHost,
     resultBox,
+    createModelDiscoveryPanel(),
   ]);
 }
 
@@ -4339,6 +4559,7 @@ async function loadAll(options) {
   if (!state.suppliers.length && directorySuppliers.length) {
     state.suppliers = directorySuppliers.map(normalizeSupplier).filter((item) => item.name);
   }
+  rememberSavedSuppliers();
 
   /* 协议顺序与标签（后端可能只返回部分协议，缺失时用内置常量补齐）。 */
   const protocolOptions = toArray(config.protocols);
@@ -4659,7 +4880,8 @@ function bindSectionNavigation() {
 }
 
 /* ------------------------------------------------------ 更新与重载 */
-const maintenance = { busy: false, jobId: "", lastCheck: null };
+const UPDATE_CHECK_TIMEOUT_MS = 20000;
+const maintenance = { busy: false, jobId: "", lastCheck: null, checkSequence: 0, checkRequest: null };
 
 function maintenanceStatus(message, kind) {
   const panel = $("maintenance-panel");
@@ -4677,14 +4899,62 @@ function maintenanceBusy(busy) {
   }
 }
 
+function updateCheckProgress(visible, ticket) {
+  let progress = $("update-check-progress");
+  if (!progress) {
+    const message = $("maintenance-message");
+    if (!message) return;
+    progress = h("div", { id: "update-check-progress", class: "maintenance-check-progress", hidden: true }, [
+      h("span", { class: "maintenance-check-indicator", "aria-hidden": "true" }),
+      h("span", { class: "maintenance-check-wait", id: "update-check-elapsed" }),
+      h("button", { id: "update-check-cancel-btn", type: "button", class: "btn tiny ghost", text: "停止等待", title: "仅停止本次检查的页面等待，不中断已提交的更新或重载任务", onclick: cancelUpdateCheck }),
+    ]);
+    message.insertAdjacentElement("afterend", progress);
+  }
+  progress.hidden = !visible;
+  if (visible && ticket) {
+    const seconds = Math.min(Math.floor((Date.now() - ticket.startedAt) / 1000), UPDATE_CHECK_TIMEOUT_MS / 1000);
+    $("update-check-elapsed").textContent = "正在检查 · 已等待 " + seconds + " 秒（最多 20 秒）";
+  }
+}
+
+function cancelUpdateCheck() {
+  const ticket = maintenance.checkRequest;
+  if (!ticket || typeof ticket.stop !== "function") return;
+  const error = new Error("已停止本次检查等待，可重新检查；稍后返回的旧结果会被忽略。");
+  error.code = "UPDATE_CHECK_CANCELLED";
+  ticket.stop(error);
+}
+
 async function checkPluginUpdate() {
-  if (maintenance.busy) return;
+  if (maintenance.busy || state.saving) return;
+  const ticket = { id: ++maintenance.checkSequence, startedAt: Date.now(), stop: null };
+  maintenance.checkRequest = ticket;
+  const isCurrent = () => maintenance.checkRequest === ticket && maintenance.checkSequence === ticket.id;
   maintenanceBusy(true);
   maintenance.lastCheck = null;
+  setBusy($("update-check-btn"), true, "检查中…");
   $("update-install-btn").hidden = true;
+  const changelog = $("maintenance-changelog");
+  if (changelog) changelog.textContent = "";
   maintenanceStatus("正在检查本仓库的版本及构建修订…");
+  updateCheckProgress(true, ticket);
+  const elapsedTimer = window.setInterval(() => {
+    if (isCurrent()) updateCheckProgress(true, ticket);
+  }, 1000);
+  let timeoutTimer;
   try {
-    const result = requireApiSuccess(await apiGet("update-check"), "检查更新失败");
+    // bridge 不承诺支持 AbortSignal；截止时间只结束页面等待，旧请求返回后不再写 UI。
+    const stopped = new Promise((resolve, reject) => { ticket.stop = reject; });
+    const deadline = new Promise((resolve, reject) => {
+      timeoutTimer = window.setTimeout(() => {
+        const error = new Error("检查更新超过 20 秒，已停止等待。请检查网络后重新检查。");
+        error.code = "UPDATE_CHECK_TIMEOUT";
+        reject(error);
+      }, UPDATE_CHECK_TIMEOUT_MS);
+    });
+    const result = requireApiSuccess(await Promise.race([apiGet("update-check"), stopped, deadline]), "检查更新失败");
+    if (!isCurrent()) return;
     maintenance.lastCheck = result;
     const detail = result.current_build != null && result.target_build != null
       ? "（当前修订 " + result.current_build + "，最新修订 " + result.target_build + "）" : "";
@@ -4694,8 +4964,23 @@ async function checkPluginUpdate() {
     const log = $("maintenance-changelog");
     if (log) log.textContent = result.changelog || "暂无更新说明";
   } catch (error) {
-    maintenanceStatus("检查更新失败：" + errText(error), "err");
-  } finally { maintenanceBusy(false); }
+    if (!isCurrent()) return;
+    if (error && (error.code === "UPDATE_CHECK_CANCELLED" || error.code === "UPDATE_CHECK_TIMEOUT")) {
+      maintenanceStatus(errText(error), "warn");
+    } else {
+      maintenanceStatus("检查更新失败：" + errText(error), "err");
+    }
+  } finally {
+    window.clearTimeout(timeoutTimer);
+    window.clearInterval(elapsedTimer);
+    ticket.stop = null;
+    if (isCurrent()) {
+      maintenance.checkRequest = null;
+      updateCheckProgress(false);
+      setBusy($("update-check-btn"), false);
+      maintenanceBusy(false);
+    }
+  }
 }
 
 async function monitorMaintenanceJob(jobId) {
@@ -4739,6 +5024,7 @@ async function startPluginMaintenance(endpoint) {
     maintenanceStatus("请先保存配置，再更新或重载插件，避免丢失未保存的修改", "warn");
     return;
   }
+  invalidateModelDiscovery("插件正在维护，完成后可重新检测供应商。");
   maintenanceBusy(true);
   const controls = Array.from(document.querySelectorAll(".layout input, .layout select, .layout textarea, .layout button, #save-btn, #retry-btn"));
   const disabled = controls.map(node => node.disabled);

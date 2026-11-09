@@ -47,8 +47,8 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("repo: " + updates.REPOSITORY_URL, (ROOT / "metadata.yaml").read_text(encoding="utf-8"))
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["version"], "1.0.10")
-        self.assertEqual(manifest["build"], 2026110901)
-        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026110901})
+        self.assertEqual(manifest["build"], 2026111001)
+        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026111001})
 
     async def test_semantic_version_comparison_and_fixed_main_archive(self):
         result = await self.check("1.0.9", 9999999999)
@@ -90,10 +90,12 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("download_url", result["data"])
 
     async def test_changelog_failure_does_not_lose_manifest_result(self):
+        current = updates._read_local_release()
+        newer = {**current, "build": current["build"] + 1}
         async def fetch(url):
             if url == updates.CHANGELOG_URL:
                 raise TimeoutError()
-            return json.dumps({"version": "1.0.10", "build": 2026110902})
+            return json.dumps(newer)
         data = await updates.check_update(None, fetch)
         self.assertTrue(data["ok"] and data["update_available"])
         self.assertIn("日志暂时读取失败", data["changelog"])

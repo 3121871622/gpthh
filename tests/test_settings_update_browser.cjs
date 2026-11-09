@@ -199,6 +199,7 @@ let passed = 0;
       assert.equal(requestCount('update-install'), 1, '重复点击不能创建两个更新任务');
       assert.ok(requestCount('update-status') >= 2, '应等待异步任务完成而非把排队当成功');
       assert.ok(calls.filter(call => call.endpoint === 'update-status').every(call => call.params.job_id === 'fixture-job'));
+      await page.waitForFunction(() => { const button = document.querySelector('#plugin-reload-btn'); return button && !button.disabled; });
       assert.equal(await page.locator('#plugin-reload-btn').isEnabled(), true);
       if (process.env.TEST_SCREENSHOT) {
         await page.locator('#maintenance-message').scrollIntoViewIfNeeded();
@@ -215,6 +216,7 @@ let passed = 0;
       const finishedPolls = requestCount('update-status');
       await page.waitForTimeout(1800);
       assert.equal(requestCount('update-status'), finishedPolls, '任务失败后不应继续轮询');
+      await page.waitForFunction(() => { const button = document.querySelector('#plugin-reload-btn'); return button && !button.disabled; });
       assert.equal(await page.locator('#plugin-reload-btn').isEnabled(), true);
     });
     await runCase('手动插件重载等待异步成功且不会重复提交', async page => {

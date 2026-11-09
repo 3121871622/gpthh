@@ -1808,6 +1808,34 @@ html[data-theme="paper"] .card, html[data-theme="paper"] .section, html[data-the
 
 .spinner.lg { width: 18px; height: 18px; border-width: 2.5px; }
 
+/* 查询进度放在独立状态区，避免 disabled 按钮与主题伪元素覆盖加载提示。 */
+.maintenance-check-progress {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 9px 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.maintenance-check-progress[hidden] { display: none; }
+.maintenance-check-indicator {
+  display: inline-block;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: maintenance-check-spin .75s linear infinite;
+}
+.maintenance-check-wait { font-variant-numeric: tabular-nums; }
+#update-check-btn.busy::after { content: none; }
+@keyframes maintenance-check-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .maintenance-check-indicator { animation: none !important; }
+}
+
 /* ------------------------------------------------------ ⓪ 附加：ID 样式钩子 */
 
 /* 以下 id 由 index.html 固定使用，保留稳定钩子便于主题覆盖与调试。 */
@@ -2872,3 +2900,10 @@ body:has(#theme-anime:checked) .section.is-current {
   .loading-block::after, .status-dot, body:has(#theme-anime:checked) .workbench-hero::before { animation: none; }
   .workbench-nav-link, .theme-swatch { transition: none; }
 }
+
+/* 模型目录检测保持为模型设置内的紧凑结果列表。 */
+.model-discovery-panel { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.model-discovery-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.model-discovery-info { flex: 1 1 230px; min-width: 0; overflow-wrap: anywhere; }
+.model-discovery-row:last-child { border-bottom: 0; }
+.model-discovery-row button { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }

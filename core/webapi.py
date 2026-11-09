@@ -2088,6 +2088,39 @@ async def _api_protocols(plugin: Any) -> Any:
     )
 
 
+async def _api_model_check(plugin: Any) -> Any:
+    """检测单家已保存供应商的模型目录，绝不发送计费生成请求。"""
+    from .model_discovery import check_model, result_fields
+
+    query = request.query
+    supplier = _text(query.get("supplier"))
+    protocol = _text(query.get("protocol")).lower()
+    model = _text(query.get("model"))
+    purpose = _text(query.get("purpose")) or "generate"
+    data = result_fields(supplier, protocol, model, purpose)
+    try:
+        if not supplier or not model or len(supplier) > 256 or len(model) > 512:
+            data["message"] = "请填写已保存供应商的准确名称和有效模型 ID"
+        elif protocol not in PROTOCOL_KEYS or purpose not in ("generate", "edit"):
+            data["message"] = "请选择有效协议；purpose 只支持 generate 或 edit"
+        else:
+            cfg = plugin.cfg
+            channel = _protocol_model(plugin, cfg, supplier, protocol, model, exact_supplier=True)
+            if channel is None:
+                data["message"] = "供应商尚未保存或名称已变化，请先保存供应商配置"
+            else:
+                parsed = urlsplit(channel.base_url)
+                if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+                    data["message"] = "供应商地址必须是有效的 http(s) URL，且不能包含 URL 用户凭据"
+                else:
+                    data = await check_model(cfg, channel, model, purpose, factory=_create_protocol,
+                                             proxy=_call_text(cfg, "proxy"), refresh=_truthy(query.get("refresh")))
+    except Exception:
+        # 不把底层异常正文交给通用 handler，以免认证头或响应正文被回传。
+        data.update(ok=False, status="invalid", message="模型检测配置读取失败，请保存配置后重试")
+    return json_response({"ok": data["ok"], "data": data})
+
+
 async def _api_list_models(plugin: Any) -> Any:
     cfg = plugin.cfg
     supplier = (
@@ -2469,6 +2502,7 @@ def register_web_apis(plugin: Any) -> bool:
     register(base + "/config", bind(_api_get_config, "GET /config"), ["GET"], "读取插件配置（不含密钥明文）")
     register(base + "/config", bind(_api_save_config, "POST /config"), ["POST"], "合并保存插件配置")
     register(base + "/suppliers", bind(_api_suppliers, "GET /suppliers"), ["GET"], "获取供应商列表")
+    register(base + "/suppliers/model-check", bind(_api_model_check, "GET /suppliers/model-check"), ["GET"], "只读检测单家供应商的模型目录与连接状态")
     register(
         base + "/suppliers/test",
         bind(_api_test_supplier, "POST /suppliers/test"),
