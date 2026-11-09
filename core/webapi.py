@@ -39,7 +39,7 @@ from .models import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_gpt_image"
-DEFAULT_VERSION = "1.0.10"
+DEFAULT_VERSION = "1.1.0"
 UPDATE_BASE_URL = "https://github.com/3121871622/gpthh"
 UPDATE_CHANGELOG_URL = plugin_updates.CHANGELOG_URL
 UPDATE_MANIFEST_URL = plugin_updates.MANIFEST_URL

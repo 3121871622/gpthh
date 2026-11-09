@@ -774,7 +774,7 @@ class BaseImageProtocol(ABC):
             if self._session is None or self._session.closed:
                 self._session = aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    headers={"User-Agent": "AstrBot-Plugin-gpt-image/1.0.8"},
+                    headers={"User-Agent": "AstrBot-Plugin-gpt-image/1.1.0"},
                     **_proxy_kwargs(self.proxy),
                 )
         return self._session

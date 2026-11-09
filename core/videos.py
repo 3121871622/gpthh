@@ -213,7 +213,7 @@ class VideoClient:
             async with self._client().request(
                 method, url, **body,
                 headers={"Authorization": "Bearer " + self.api_key, "Accept": "application/json",
-                         "User-Agent": "gpthh-video/1.0.9"},
+                         "User-Agent": "gpthh-video/1.1.0"},
                 timeout=aiohttp.ClientTimeout(total=max(0.01, limit)),
                 proxy=self.proxy, allow_redirects=False,
             ) as response:
@@ -367,7 +367,7 @@ class VideoClient:
         temporary = target.with_suffix(".part")
         try:
             for _ in range(5):
-                headers = {"User-Agent": "gpthh-video/1.0.9"}
+                headers = {"User-Agent": "gpthh-video/1.1.0"}
                 if auth:
                     headers["Authorization"] = "Bearer " + self.api_key
                 async with self._client().get(url, headers=headers, proxy=self.proxy,

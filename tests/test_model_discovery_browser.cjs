@@ -84,7 +84,7 @@ const server = http.createServer(async (req, res) => {
         else {publishSavedConfig(f, payload); data = {ok: true, saved: true, config_reloaded: true};}
       } else data = f.saved;
     } else if (endpoint === 'suppliers') data = {suppliers: f.saved.suppliers};
-    else if (endpoint === 'status') data = {version: '1.0.10', ready: true, build: 100};
+    else if (endpoint === 'status') data = {version: '1.1.0', ready: true, build: 100};
     else if (endpoint === 'models') {
       const supplier = query.supplier || f.saved.active_supplier;
       data = {ok: true, supplier, protocol: query.protocol || 'openai', models: f.catalogs[supplier] || []};

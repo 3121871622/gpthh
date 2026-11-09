@@ -206,9 +206,9 @@ function textOf(node) { return (node.textContent || '') + node.children.map(text
   const html = fs.readFileSync(path.join(root, 'pages/settings/index.html'), 'utf8');
   assert.match(html, /id="section-videos"/);
   assert.match(html, /id="videos-body"/);
-  assert.match(html, /href="\.\/style\.css\?v=1\.0\.10&rev=workbench-discovery-2026111001"/);
-  assert.match(html, /src="\.\/app\.js\?v=1\.0\.10&rev=workbench-discovery-2026111001"/);
-  assert.match(source, /FALLBACK_VERSION = "1\.0\.10"/);
+  assert.match(html, /href="\.\/style\.css\?v=1\.1\.0&rev=release-1.1.0-2026111003"/);
+  assert.match(html, /src="\.\/app\.js\?v=1\.1\.0&rev=release-1.1.0-2026111003"/);
+  assert.match(source, /FALLBACK_VERSION = "1\.1\.0"/);
 
   api.state.config.video_supplier = '';
   api.state.suppliers.push({ name: '专用视频供应商', base_url: 'https://example.invalid/v1' });

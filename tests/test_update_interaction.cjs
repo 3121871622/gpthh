@@ -22,7 +22,7 @@ window.AstrBotPluginPage={ready:async()=>({}),onContext:()=>{},apiGet:async(endp
  const fixture=window.updateFixture;
  if(endpoint==='config')return structuredClone(fixtureConfig);
  if(endpoint==='suppliers')return {suppliers:fixtureConfig.suppliers};
- if(endpoint==='status')return {version:'1.0.10',build:2026111001};
+ if(endpoint==='status')return {version:'1.1.0',build:2026111003};
  if(endpoint==='update-check')return new Promise((resolve,reject)=>fixture.checks.push({resolve,reject}));
  if(endpoint==='update-status')return new Promise((resolve,reject)=>fixture.polls.push({resolve,reject}));
  return {};
@@ -38,7 +38,7 @@ const server = http.createServer((req, res) => {
   res.end(text);
 });
 
-const result = (message = 'fixture-check-current', target = 2) => ({ok: true, update_available: true, current_version: '1.0.10', latest_version: '1.0.10', current_build: 1, target_build: target, message, changelog: message + '-notes'});
+const result = (message = 'fixture-check-current', target = 2) => ({ok: true, update_available: true, current_version: '1.1.0', latest_version: '1.1.0', current_build: 1, target_build: target, message, changelog: message + '-notes'});
 let passed = 0;
 const failures = [];
 

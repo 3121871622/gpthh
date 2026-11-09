@@ -12,7 +12,7 @@
  */
 
 const PLUGIN_TITLE = "gpt-image-2.5绘画";
-const FALLBACK_VERSION = "1.0.10";
+const FALLBACK_VERSION = "1.1.0";
 
 const THEME_STORAGE_KEY = "astrbot-gpt-image-settings-theme";
 const THEME_OPTIONS = [

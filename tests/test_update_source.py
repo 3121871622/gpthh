@@ -41,14 +41,14 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
         return result
 
     async def test_source_constants_and_metadata_point_to_project(self):
-        self.assertEqual(WEBAPI.DEFAULT_VERSION, "1.0.10")
+        self.assertEqual(WEBAPI.DEFAULT_VERSION, "1.1.0")
         self.assertEqual(WEBAPI.UPDATE_BASE_URL, updates.REPOSITORY_URL)
         self.assertEqual(WEBAPI.UPDATE_MANIFEST_URL, updates.MANIFEST_URL)
         self.assertIn("repo: " + updates.REPOSITORY_URL, (ROOT / "metadata.yaml").read_text(encoding="utf-8"))
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["version"], "1.0.10")
-        self.assertEqual(manifest["build"], 2026111002)
-        self.assertEqual(updates._read_local_release(), {"version": "1.0.10", "build": 2026111002})
+        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(manifest["build"], 2026111003)
+        self.assertEqual(updates._read_local_release(), {"version": "1.1.0", "build": 2026111003})
 
     async def test_semantic_version_comparison_and_fixed_main_archive(self):
         result = await self.check("1.0.9", 9999999999)
@@ -129,7 +129,7 @@ class UpdateSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_request.full_url, "https://api.github.com/repos/3121871622/gpthh/contents/CHANGELOG.md?ref=main")
         self.assertEqual(sent_request.get_header("Accept"), "application/vnd.github.raw+json")
         self.assertIsNone(sent_request.get_header("Authorization"))
-        self.assertEqual(sent_request.get_header("User-agent"), "astrbot-plugin-gpt-image/1.0.10")
+        self.assertEqual(sent_request.get_header("User-agent"), "astrbot-plugin-gpt-image/1.1.0")
         self.assertEqual(request.call_args.kwargs["timeout"], 8)
 
     async def test_manifest_reads_fixed_official_api_without_credentials(self):

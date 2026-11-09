@@ -51,12 +51,12 @@ const server = http.createServer(async (req, res) => {
         else {saved = {...saved, ...payload}; data = {ok: true, saved: true, reloaded: true};}
       } else data = saved;
     } else if (endpoint === 'suppliers') data = {suppliers: saved.suppliers};
-    else if (endpoint === 'status') data = {version: '1.0.10'};
+    else if (endpoint === 'status') data = {version: '1.1.0'};
     else if (endpoint === 'models') {
       const supplier = url.searchParams.get('supplier') || saved.active_supplier;
       data = {ok: true, supplier, protocol: url.searchParams.get('protocol') || 'openai', models: catalogs[supplier] || []};
     } else if (endpoint === 'update-check') {
-      data = {ok: true, update_available: true, current_version: '1.0.10', latest_version: '1.0.10',
+      data = {ok: true, update_available: true, current_version: '1.1.0', latest_version: '1.1.0',
         current_build: 1, target_build: 2, message: '发现同版本更新', changelog: 'fixture-update-notes'};
     } else if (endpoint === 'update-install' || endpoint === 'plugin-reload') {
       currentJob = 'fixture-job'; pollCount = 0;

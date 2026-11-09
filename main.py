@@ -102,7 +102,7 @@ from .core.video_progress import (
     is_video_duration_reply, parse_video_seconds,
 )
 
-PLUGIN_VERSION = "1.0.10"
+PLUGIN_VERSION = "1.1.0"
 
 #: 不受「群开关 / 私聊开关」限制的指令类型（管理类，仍需主人权限）
 _SCOPE_EXEMPT_KINDS = frozenset(
